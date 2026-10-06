@@ -15,7 +15,10 @@ namespace LunarLander
     ///   Las patas se definen solo en el lado derecho y se espejan automáticamente.
     /// - Llama: dos LineRenderers (exterior e interior/núcleo) que parpadean con longitud aleatoria
     ///   solo mientras el empuje principal está activo.
-    /// - Si hay un LanderController (en este objeto o en un padre), se suscribe a OnThrustChanged.
+    /// - Daños: al recibir OnCrashed, o bien se desprende la pata golpeada (LegBroken), o bien la
+    ///   nave estalla en segmentos de línea con física propia y chispas (Explosion).
+    ///   Al recibir OnReset todo se restaura.
+    /// - Si hay un LanderController (en este objeto o en un padre), se suscribe a sus eventos.
     ///   También se puede controlar a mano con SetFlameActive(bool).
     ///
     /// Sobre el material: lo más fiable en builds es asignar en el Inspector un material con el
@@ -37,6 +40,12 @@ namespace LunarLander
         private const float InnerFlameHalfWidth = 0.065f;
         private const float InnerFlameLengthRatio = 0.5f;
         private const int FlamePointCount = 5;
+
+        /// <summary>Los primeros N trazos de MirroredStrokes son la pata (puntal, tirante, plato).</summary>
+        private const int LegStrokeCount = 3;
+
+        /// <summary>Punto donde la pata se une al cuerpo (lado derecho; se espeja en X).</summary>
+        private static readonly Vector3 LegAnchor = new Vector3(0.46f, 0.18f, 0f);
 
         /// <summary>
         /// Silueta principal (loop cerrado): etapa de ascenso octogonal arriba, etapa de descenso
@@ -118,7 +127,10 @@ namespace LunarLander
                 new Vector3(0.21f, 0.82f, 0f)),
         };
 
-        /// <summary>Trazos definidos solo para el lado DERECHO; se espejan al izquierdo.</summary>
+        /// <summary>
+        /// Trazos definidos solo para el lado DERECHO; se espejan al izquierdo.
+        /// Los primeros LegStrokeCount son la pata (se desprenden juntos al romperse).
+        /// </summary>
         private static readonly Stroke[] MirroredStrokes =
         {
             // Puntal principal de la pata
@@ -153,6 +165,21 @@ namespace LunarLander
         // los shaders legacy como Sprites/Default usan _Color).
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int ColorId = Shader.PropertyToID("_Color");
+
+        private static PhysicsMaterial2D debrisPhysics;
+
+        private static PhysicsMaterial2D DebrisPhysics
+        {
+            get
+            {
+                if (debrisPhysics == null)
+                {
+                    debrisPhysics = new PhysicsMaterial2D("VectorDebris") { friction = 0.6f, bounciness = 0.35f };
+                }
+
+                return debrisPhysics;
+            }
+        }
 
         // ------------------------------------------------------------------
         // Configuración (Inspector)
@@ -191,6 +218,23 @@ namespace LunarLander
         [Tooltip("Segundos entre cambios de forma de la llama (parpadeo de estilo retro).")]
         [SerializeField, Min(0.01f)] private float flameFlickerInterval = 0.05f;
 
+        [Header("Daños (explosión / pata rota)")]
+        [Tooltip("Longitud máxima de cada trozo; los segmentos más largos se parten en varios.")]
+        [SerializeField, Min(0.05f)] private float fragmentMaxLength = 0.35f;
+
+        [Tooltip("Segundos que duran los escombros antes de desaparecer.")]
+        [SerializeField, Min(0.5f)] private float debrisLifetime = 4f;
+
+        [Tooltip("Segundos finales de parpadeo y apagado.")]
+        [SerializeField, Min(0.1f)] private float debrisFadeTime = 1f;
+
+        [Tooltip("Chispas que salen disparadas en una explosión.")]
+        [SerializeField, Range(0, 40)] private int explosionSparkCount = 16;
+
+        [Tooltip("Opcional: capa para los escombros. Créala en Project Settings y desactiva su colisión " +
+                 "consigo misma en la matriz de física para evitar que los trozos choquen entre sí.")]
+        [SerializeField] private string debrisLayerName = "";
+
         // ------------------------------------------------------------------
         // Estado interno
         // ------------------------------------------------------------------
@@ -200,6 +244,13 @@ namespace LunarLander
         private LineRenderer flameCoreRenderer;
         private readonly List<LineRenderer> detailRenderers = new List<LineRenderer>();
         private readonly List<Stroke> detailStrokes = new List<Stroke>();
+        private readonly List<int> detailSides = new List<int>();     // +1 derecha, -1 izquierda, 0 centro
+        private readonly List<bool> detailIsLeg = new List<bool>();
+        private readonly List<GameObject> spawnedDebris = new List<GameObject>();
+
+        private Rigidbody2D landerBody;
+        private Collider2D[] landerColliders;
+        private int debrisLayer = -1;
 
         private Material activeMaterial;
         private Material runtimeMaterial; // solo si lo hemos creado nosotros (para destruirlo)
@@ -229,6 +280,16 @@ namespace LunarLander
                 lander = GetComponentInParent<LanderController>();
             }
 
+            if (lander != null)
+            {
+                landerBody = lander.GetComponent<Rigidbody2D>();
+            }
+
+            if (!string.IsNullOrEmpty(debrisLayerName))
+            {
+                debrisLayer = LayerMask.NameToLayer(debrisLayerName);
+            }
+
             // Casco: el último punto se une con el primero (loop cerrado).
             ConfigureLine(lineRenderer, ShipOutline, true, lineColor, lineWidth);
 
@@ -241,6 +302,8 @@ namespace LunarLander
             if (lander != null)
             {
                 lander.OnThrustChanged += SetFlameActive;
+                lander.OnCrashed += HandleCrashed;
+                lander.OnReset += HandleReset;
                 SetFlameActive(lander.IsThrusting);
             }
             else
@@ -254,6 +317,8 @@ namespace LunarLander
             if (lander != null)
             {
                 lander.OnThrustChanged -= SetFlameActive;
+                lander.OnCrashed -= HandleCrashed;
+                lander.OnReset -= HandleReset;
             }
 
             SetFlameActive(false);
@@ -317,6 +382,200 @@ namespace LunarLander
         }
 
         // ------------------------------------------------------------------
+        // Daños
+        // ------------------------------------------------------------------
+
+        private void HandleCrashed(LandingResult result)
+        {
+            SetFlameActive(false);
+            CacheLanderColliders();
+
+            switch (result.Crash)
+            {
+                case CrashType.LegBroken:
+                    BreakLeg(result);
+                    break;
+                case CrashType.Explosion:
+                    Explode(result);
+                    break;
+            }
+        }
+
+        private void HandleReset()
+        {
+            // Quita los escombros que queden y restaura toda la nave.
+            for (int i = 0; i < spawnedDebris.Count; i++)
+            {
+                if (spawnedDebris[i] != null) Destroy(spawnedDebris[i]);
+            }
+
+            spawnedDebris.Clear();
+
+            lineRenderer.enabled = true;
+            for (int i = 0; i < detailRenderers.Count; i++)
+            {
+                detailRenderers[i].enabled = true;
+            }
+
+            SetFlameActive(lander != null && lander.IsThrusting);
+        }
+
+        /// <summary>La pata golpeada se desprende en sus piezas y salen unas chispas del anclaje.</summary>
+        private void BreakLeg(LandingResult result)
+        {
+            int side = result.BrokenLegSide >= 0 ? 1 : -1;
+            Vector2 baseVelocity = result.LanderVelocity;
+            float impactSpeed = new Vector2(result.ImpactHorizontalSpeed, result.ImpactVerticalSpeed).magnitude;
+            float speed = Mathf.Clamp(impactSpeed, 1f, 6f) * 0.5f;
+
+            Vector2 anchor = transform.TransformPoint(new Vector3(LegAnchor.x * side, LegAnchor.y, 0f));
+
+            for (int i = 0; i < detailRenderers.Count; i++)
+            {
+                if (!detailIsLeg[i] || detailSides[i] != side) continue;
+
+                detailRenderers[i].enabled = false;
+                SpawnStrokeFragments(detailStrokes[i].Points, detailStrokes[i].Loop,
+                                     lineWidth * detailWidthScale, anchor, baseVelocity, speed, 1f);
+            }
+
+            SpawnSparks(8, anchor, speed + 1.5f, baseVelocity);
+        }
+
+        /// <summary>La nave estalla: cada segmento del dibujo sale despedido y caen con física propia.</summary>
+        private void Explode(LandingResult result)
+        {
+            Vector2 baseVelocity = result.LanderVelocity;
+            float impactSpeed = new Vector2(result.ImpactHorizontalSpeed, result.ImpactVerticalSpeed).magnitude;
+            float fragmentSpeed = Mathf.Lerp(2.5f, 6f, Mathf.InverseLerp(2f, 12f, impactSpeed));
+
+            Vector2 center = Vector2.Lerp(transform.position, result.ImpactPoint, 0.5f);
+
+            // Oculta la nave entera (el casco usa el LineRenderer de este objeto).
+            lineRenderer.enabled = false;
+            for (int i = 0; i < detailRenderers.Count; i++)
+            {
+                detailRenderers[i].enabled = false;
+            }
+
+            SpawnStrokeFragments(ShipOutline, true, lineWidth, center, baseVelocity, fragmentSpeed, 1f);
+            for (int i = 0; i < detailStrokes.Count; i++)
+            {
+                SpawnStrokeFragments(detailStrokes[i].Points, detailStrokes[i].Loop,
+                                     lineWidth * detailWidthScale, center, baseVelocity, fragmentSpeed, 1f);
+            }
+
+            SpawnSparks(explosionSparkCount, center, fragmentSpeed * 1.4f, baseVelocity);
+        }
+
+        private void CacheLanderColliders()
+        {
+            landerColliders = lander != null
+                ? lander.GetComponentsInChildren<Collider2D>()
+                : new Collider2D[0];
+        }
+
+        /// <summary>Convierte un trazo (polilínea) en segmentos sueltos que salen despedidos desde center.</summary>
+        private void SpawnStrokeFragments(Vector3[] points, bool loop, float width, Vector2 center,
+                                          Vector2 baseVelocity, float speed, float lifetimeScale)
+        {
+            int n = points.Length;
+            int segmentCount = loop ? n : n - 1;
+            float gravity = landerBody != null ? landerBody.gravityScale : 0.3f;
+
+            for (int s = 0; s < segmentCount; s++)
+            {
+                Vector3 a = transform.TransformPoint(points[s]);
+                Vector3 b = transform.TransformPoint(points[(s + 1) % n]);
+
+                float length = Vector3.Distance(a, b);
+                if (length < 0.01f) continue;
+
+                int parts = Mathf.Max(1, Mathf.CeilToInt(length / fragmentMaxLength));
+                for (int p = 0; p < parts; p++)
+                {
+                    Vector3 pa = Vector3.Lerp(a, b, p / (float)parts);
+                    Vector3 pb = Vector3.Lerp(a, b, (p + 1) / (float)parts);
+                    Vector2 mid = (pa + pb) * 0.5f;
+
+                    Vector2 dir = mid - center;
+                    if (dir.sqrMagnitude < 0.0001f) dir = Random.insideUnitCircle;
+                    dir.Normalize();
+                    dir = Quaternion.Euler(0f, 0f, Random.Range(-35f, 35f)) * (Vector3)dir;
+
+                    Vector2 velocity = baseVelocity * 0.5f + dir * Random.Range(speed * 0.5f, speed);
+                    float life = Random.Range(debrisLifetime * 0.7f, debrisLifetime) * lifetimeScale;
+
+                    SpawnFragment(pa, pb, lineColor, width, velocity, Random.Range(-540f, 540f),
+                                  true, gravity, 0.1f, life);
+                }
+            }
+        }
+
+        /// <summary>Chispas: segmentos cortos y brillantes, sin colisión y de vida corta.</summary>
+        private void SpawnSparks(int count, Vector2 center, float speed, Vector2 baseVelocity)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                float angle = Random.Range(0f, Mathf.PI * 2f);
+                Vector2 dir = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle));
+                float length = Random.Range(0.1f, 0.25f);
+
+                Vector3 a = center + dir * Random.Range(0f, 0.15f);
+                Vector3 b = a + (Vector3)(dir * length);
+
+                Vector2 velocity = baseVelocity * 0.3f + dir * Random.Range(speed * 0.6f, speed);
+                SpawnFragment(a, b, flameColor, lineWidth * 0.7f, velocity, Random.Range(-360f, 360f),
+                              false, 0f, 1.5f, Random.Range(0.4f, 0.9f));
+            }
+        }
+
+        private void SpawnFragment(Vector3 a, Vector3 b, Color color, float width, Vector2 velocity, float spin,
+                                   bool collide, float gravity, float drag, float life)
+        {
+            float length = Vector3.Distance(a, b);
+
+            var go = new GameObject("VectorDebris");
+            go.transform.position = (a + b) * 0.5f;
+            go.transform.rotation = Quaternion.Euler(0f, 0f, Mathf.Atan2(b.y - a.y, b.x - a.x) * Mathf.Rad2Deg);
+            if (debrisLayer >= 0) go.layer = debrisLayer;
+            spawnedDebris.Add(go);
+
+            var line = go.AddComponent<LineRenderer>();
+            ConfigureLine(line,
+                          new[] { new Vector3(-length * 0.5f, 0f, 0f), new Vector3(length * 0.5f, 0f, 0f) },
+                          false, color, width);
+
+            var body = go.AddComponent<Rigidbody2D>();
+            body.gravityScale = gravity;
+            body.drag = drag;
+            body.angularDrag = 0.05f;
+            body.mass = 0.1f;
+            body.velocity = velocity;
+            body.angularVelocity = spin;
+
+            if (collide)
+            {
+                body.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
+
+                var box = go.AddComponent<BoxCollider2D>();
+                box.size = new Vector2(length, 0.04f);
+                box.sharedMaterial = DebrisPhysics;
+
+                // Los trozos nacen sobre la nave: no deben empujarla ni chocar con ella.
+                if (landerColliders != null)
+                {
+                    for (int i = 0; i < landerColliders.Length; i++)
+                    {
+                        if (landerColliders[i] != null) Physics2D.IgnoreCollision(box, landerColliders[i]);
+                    }
+                }
+            }
+
+            go.AddComponent<VectorDebris>().Init(line, color, life, debrisFadeTime);
+        }
+
+        // ------------------------------------------------------------------
         // Internos
         // ------------------------------------------------------------------
 
@@ -324,12 +583,27 @@ namespace LunarLander
         private void BuildDetails()
         {
             detailStrokes.Clear();
-            detailStrokes.AddRange(CenterStrokes);
+            detailSides.Clear();
+            detailIsLeg.Clear();
 
-            foreach (Stroke stroke in MirroredStrokes)
+            foreach (Stroke stroke in CenterStrokes)
             {
                 detailStrokes.Add(stroke);
-                detailStrokes.Add(Mirror(stroke));
+                detailSides.Add(0);
+                detailIsLeg.Add(false);
+            }
+
+            for (int j = 0; j < MirroredStrokes.Length; j++)
+            {
+                bool isLeg = j < LegStrokeCount;
+
+                detailStrokes.Add(MirroredStrokes[j]);
+                detailSides.Add(1);
+                detailIsLeg.Add(isLeg);
+
+                detailStrokes.Add(Mirror(MirroredStrokes[j]));
+                detailSides.Add(-1);
+                detailIsLeg.Add(isLeg);
             }
 
             for (int i = 0; i < detailStrokes.Count; i++)
@@ -401,10 +675,10 @@ namespace LunarLander
             flameCoreRenderer.SetPositions(flameCorePoints);
         }
 
-        /// <summary>Configura un LineRenderer completo por código (casco, detalles y llamas).</summary>
+        /// <summary>Configura un LineRenderer completo por código (casco, detalles, llamas y escombros).</summary>
         private void ConfigureLine(LineRenderer lr, Vector3[] points, bool loop, Color color, float width)
         {
-            lr.useWorldSpace = false;                    // la línea se mueve y rota con la nave
+            lr.useWorldSpace = false;                    // la línea se mueve y rota con su transform
             lr.alignment = LineAlignment.TransformZ;     // el plano de la línea mira a lo largo del eje Z local
             lr.textureMode = LineTextureMode.Stretch;
             lr.loop = loop;

@@ -5,10 +5,6 @@ using UnityEngine.UI;
 
 namespace LunarLander
 {
-    /// <summary>
-    /// HUD basado en Canvas y TextMeshPro con soporte completo para la lógica de Lunar Lander:
-    /// telemetría, altitud por raycast, advertencias de aproximación y banner final tipográfico.
-    /// </summary>
     [DisallowMultipleComponent]
     public sealed class StandardHUD : MonoBehaviour
     {
@@ -39,11 +35,6 @@ namespace LunarLander
         [Header("Alertas Centrales")]
         [SerializeField] private TextMeshProUGUI alertText;
 
-        [Header("Banner de Fin de Partida")]
-        [SerializeField] private GameObject bannerPanel;
-        [SerializeField] private TextMeshProUGUI bannerTitleText;
-        [SerializeField] private TextMeshProUGUI bannerDetailText;
-
         [Header("Paleta de Colores")]
         [SerializeField] private Color normalColor = new Color(0.40f, 1f, 0.55f);
         [SerializeField] private Color warningColor = new Color(1f, 0.32f, 0.22f);
@@ -53,7 +44,6 @@ namespace LunarLander
         [SerializeField, Min(0.05f)] private float blinkInterval = 0.3f;
         [SerializeField, Min(0f)] private float alertAltitude = 4f;
         [SerializeField, Min(0.5f)] private float minAlertDuration = 1.2f;
-        [SerializeField, Min(1f)] private float revealCharsPerSecond = 40f;
         [SerializeField, Range(0f, 1f)] private float lowFuelFraction = 0.2f;
 
         [Header("Escalas y Compensaciones")]
@@ -67,14 +57,6 @@ namespace LunarLander
         private LanderState lastState = LanderState.Flying;
         private bool blinkOn = true;
         private float blinkTimer;
-
-        // Banner con efecto máquina de escribir
-        private bool bannerActive;
-        private string bannerTitleFull;
-        private string bannerDetailFull;
-        private float bannerReveal;
-        private int shownTitleChars;
-        private int shownDetailChars;
 
         // Raycast optimizado sin asignaciones de memoria
         private readonly RaycastHit2D[] groundHits = new RaycastHit2D[8];
@@ -109,7 +91,6 @@ namespace LunarLander
 
         private void Start()
         {
-            // Ajustar el ancho visual de la zona segura exactamente al límite de la física
             if (tiltSafeZoneLine != null && lander != null)
             {
                 float safeRatio = Mathf.Clamp01(lander.MaxLandingAngle / tiltDisplayRange);
@@ -128,26 +109,6 @@ namespace LunarLander
                 useLayerMask = true,
                 layerMask = Physics2D.AllLayers
             };
-
-            HideBanner();
-        }
-
-        private void OnEnable()
-        {
-            if (lander != null)
-            {
-                lander.OnLanded += HandleLanded;
-                lander.OnCrashed += HandleCrashed;
-            }
-        }
-
-        private void OnDisable()
-        {
-            if (lander != null)
-            {
-                lander.OnLanded -= HandleLanded;
-                lander.OnCrashed -= HandleCrashed;
-            }
         }
 
         private void Update()
@@ -157,7 +118,6 @@ namespace LunarLander
             UpdateBlink();
             UpdateFlightState();
 
-            // Raycast periódico para no penalizar rendimiento
             if (frameCounter++ % altitudeUpdateInterval == 0)
             {
                 cachedAltitude = CalculateTerrainAltitude();
@@ -169,7 +129,6 @@ namespace LunarLander
             UpdateReadouts(velocity, cachedAltitude);
             UpdateTiltGauge(angle);
             UpdateAlert(velocity, cachedAltitude, angle);
-            UpdateBanner();
         }
 
         // ------------------------------------------------------------------
@@ -194,7 +153,6 @@ namespace LunarLander
                 if (state == LanderState.Flying)
                 {
                     flightTime = 0f;
-                    HideBanner();
                 }
                 lastState = state;
             }
@@ -272,16 +230,10 @@ namespace LunarLander
         {
             if (tiltIndicator == null) return;
 
-            // Normalizar la inclinación entre -1 y 1
             float norm = Mathf.Clamp(angle / tiltDisplayRange, -1f, 1f);
-
-            // Mover la aguja horizontalmente (eje X) a lo largo de la línea
             tiltIndicator.anchoredPosition = new Vector2(-norm * tiltMaxOffset, tiltIndicator.anchoredPosition.y);
-
-            // Asegurar que la rotación se mantenga vertical
             tiltIndicator.localEulerAngles = Vector3.zero;
 
-            // Cambiar a color de advertencia si el ángulo supera el límite seguro de aterrizaje
             bool tiltUnsafe = Mathf.Abs(angle) > lander.MaxLandingAngle;
             var img = tiltIndicator.GetComponent<Image>();
             if (img != null)
@@ -302,7 +254,6 @@ namespace LunarLander
                 return;
             }
 
-            // 1. Detectar si hay una nueva condición de alerta en este frame
             string detectedMessage = string.Empty;
             bool isSafeToLand = false;
             bool nearGround = altitude < alertAltitude;
@@ -318,16 +269,14 @@ namespace LunarLander
                 isSafeToLand = true;
             }
 
-            // 2. Control de permanencia: Si hay una nueva alerta, se renueva el tiempo
             if (!string.IsNullOrEmpty(detectedMessage))
             {
                 currentAlertMessage = detectedMessage;
                 currentAlertIsSafe = isSafeToLand;
-                alertHoldTimer = minAlertDuration; // Se garantiza que permanecerá visible al menos este tiempo
+                alertHoldTimer = minAlertDuration;
             }
             else if (alertHoldTimer > 0f)
             {
-                // Si no hay condición en este frame, descontamos tiempo manteniendo el último mensaje
                 alertHoldTimer -= Time.deltaTime;
                 if (alertHoldTimer <= 0f)
                 {
@@ -335,7 +284,6 @@ namespace LunarLander
                 }
             }
 
-            // 3. Renderizar el texto
             if (string.IsNullOrEmpty(currentAlertMessage))
             {
                 alertText.enabled = false;
@@ -344,7 +292,6 @@ namespace LunarLander
             {
                 alertText.text = currentAlertMessage;
                 alertText.color = currentAlertIsSafe ? normalColor : warningColor;
-                // SAFE TO LAND se mantiene fijo; los avisos de peligro parpadean a un ritmo más pausado
                 alertText.enabled = currentAlertIsSafe || blinkOn;
             }
         }
@@ -367,89 +314,8 @@ namespace LunarLander
             return Mathf.Max(0f, lander.transform.position.y - footOffset);
         }
 
-        // ------------------------------------------------------------------
-        // Banner de Mensaje Final
-        // ------------------------------------------------------------------
-
-        private void HandleLanded(LandingResult result)
-        {
-            ShowBanner("CONGRATULATIONS", "THE EAGLE HAS LANDED", normalColor);
-        }
-
-        private void HandleCrashed(LandingResult result)
-        {
-            ShowBanner("CRASH", CrashReason(result), warningColor);
-        }
-
-        private string CrashReason(LandingResult result)
-        {
-            if (result.ImpactVerticalSpeed > lander.MaxLandingVerticalSpeed) return "VERTICAL SPEED TOO HIGH";
-            if (result.ImpactHorizontalSpeed > lander.MaxLandingHorizontalSpeed) return "HORIZONTAL SPEED TOO HIGH";
-            if (result.ImpactAngle > lander.MaxLandingAngle) return "BAD LANDING ANGLE";
-            if (!result.OnLandingPad) return "NOT A LANDING PAD";
-            return "CRASH LANDING";
-        }
-
-        private void ShowBanner(string title, string detail, Color color)
-        {
-            bannerTitleFull = title;
-            bannerDetailFull = detail;
-            bannerReveal = 0f;
-            shownTitleChars = 0;
-            shownDetailChars = 0;
-            bannerActive = true;
-
-            if (bannerPanel != null) bannerPanel.SetActive(true);
-            if (bannerTitleText != null)
-            {
-                bannerTitleText.color = color;
-                bannerTitleText.text = string.Empty;
-            }
-            if (bannerDetailText != null)
-            {
-                bannerDetailText.color = color;
-                bannerDetailText.text = string.Empty;
-            }
-        }
-
-        private void HideBanner()
-        {
-            bannerActive = false;
-            bannerTitleFull = null;
-            bannerDetailFull = null;
-
-            if (bannerPanel != null) bannerPanel.SetActive(false);
-            if (bannerTitleText != null) bannerTitleText.text = string.Empty;
-            if (bannerDetailText != null) bannerDetailText.text = string.Empty;
-        }
-
-        private void UpdateBanner()
-        {
-            if (!bannerActive || string.IsNullOrEmpty(bannerTitleFull)) return;
-
-            bannerReveal += Time.unscaledDeltaTime * revealCharsPerSecond;
-
-            int total = bannerTitleFull.Length + bannerDetailFull.Length;
-            int revealed = Mathf.Min(Mathf.FloorToInt(bannerReveal), total);
-            int titleChars = Mathf.Min(revealed, bannerTitleFull.Length);
-            int detailChars = Mathf.Max(0, revealed - bannerTitleFull.Length);
-
-            if (titleChars != shownTitleChars && bannerTitleText != null)
-            {
-                shownTitleChars = titleChars;
-                bannerTitleText.text = bannerTitleFull.Substring(0, titleChars);
-            }
-
-            if (detailChars != shownDetailChars && bannerDetailText != null)
-            {
-                shownDetailChars = detailChars;
-                bannerDetailText.text = bannerDetailFull.Substring(0, detailChars);
-            }
-        }
-
         private void OnValidate()
         {
-            // Només s'executa a l'editor si no estem en mode Play
             if (!Application.isPlaying)
             {
                 if (scoreText != null) scoreText.text = "SCORE: 0000";

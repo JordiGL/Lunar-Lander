@@ -19,6 +19,17 @@ namespace LunarLander
         Touchdown
     }
 
+    /// <summary>Tipo de daño de un choque.</summary>
+    public enum CrashType
+    {
+        /// <summary>No hubo choque (aterrizaje correcto).</summary>
+        None,
+        /// <summary>Golpe moderado en una pata: se rompe y la nave queda dañada.</summary>
+        LegBroken,
+        /// <summary>Golpe en el casco o a gran velocidad: la nave explota.</summary>
+        Explosion
+    }
+
     /// <summary>Instantánea de telemetría de la nave (pensada para HUD).</summary>
     public readonly struct LanderStatus
     {
@@ -52,7 +63,21 @@ namespace LunarLander
         public readonly float ImpactAngle;
         public readonly float FuelRemaining;
 
-        public LandingResult(bool success, bool onLandingPad, float vSpeed, float hSpeed, float angle, float fuelRemaining)
+        /// <summary>Tipo de daño (None si el aterrizaje fue correcto).</summary>
+        public readonly CrashType Crash;
+
+        /// <summary>Pata rota: +1 derecha, -1 izquierda, 0 si no aplica.</summary>
+        public readonly int BrokenLegSide;
+
+        /// <summary>Punto de impacto en coordenadas de mundo.</summary>
+        public readonly Vector2 ImpactPoint;
+
+        /// <summary>Velocidad de la nave en el momento del choque (para los efectos).</summary>
+        public readonly Vector2 LanderVelocity;
+
+        public LandingResult(bool success, bool onLandingPad, float vSpeed, float hSpeed, float angle, float fuelRemaining,
+                             CrashType crash = CrashType.None, int brokenLegSide = 0,
+                             Vector2 impactPoint = default, Vector2 landerVelocity = default)
         {
             Success = success;
             OnLandingPad = onLandingPad;
@@ -60,6 +85,10 @@ namespace LunarLander
             ImpactHorizontalSpeed = hSpeed;
             ImpactAngle = angle;
             FuelRemaining = fuelRemaining;
+            Crash = crash;
+            BrokenLegSide = brokenLegSide;
+            ImpactPoint = impactPoint;
+            LanderVelocity = landerVelocity;
         }
     }
 
@@ -70,7 +99,11 @@ namespace LunarLander
     ///
     /// Aterrizaje en dos fases: al primer contacto válido con una plataforma se entra en
     /// Touchdown (sin control del jugador, física activa) y solo cuando la nave se queda
-    /// quieta sobre sus patas se declara Landed. Si vuelca o rebota fuerte, se declara Crashed.
+    /// quieta sobre sus patas se declara Landed.
+    ///
+    /// Choques: según DÓNDE se apoya la nave y a qué velocidad, se rompe una pata
+    /// (CrashType.LegBroken) o explota (CrashType.Explosion). El renderer y el colisionador
+    /// reaccionan a OnCrashed.
     ///
     /// Controles (Input Manager clásico):
     ///   - Rotar: A / D o flechas izquierda / derecha.
@@ -135,6 +168,17 @@ namespace LunarLander
         [Tooltip("Si durante el asentamiento la nave se inclina más que esto, se considera que ha volcado.")]
         [SerializeField, Range(10f, 90f)] private float tipOverAngle = 45f;
 
+        [Header("Daños en el choque")]
+        [Tooltip("Velocidad de impacto (módulo) a partir de la cual cualquier choque destruye la nave. " +
+                 "Por debajo, un golpe en una pata solo la rompe; un golpe en el casco siempre explota.")]
+        [SerializeField, Min(0f)] private float explosionSpeed = 5f;
+
+        [Tooltip("Un contacto cuenta como 'pata' si |x local| supera este valor...")]
+        [SerializeField, Min(0f)] private float legZoneMinX = 0.5f;
+
+        [Tooltip("...y su y local está por debajo de este valor (coordenadas locales de la nave).")]
+        [SerializeField] private float legZoneMaxY = 0.25f;
+
         // ------------------------------------------------------------------
         // Eventos
         // ------------------------------------------------------------------
@@ -154,8 +198,11 @@ namespace LunarLander
         /// <summary>Aterrizaje correcto (la nave ya está asentada).</summary>
         public event Action<LandingResult> OnLanded;
 
-        /// <summary>Colisión destructiva o vuelco.</summary>
+        /// <summary>Colisión destructiva o vuelco. result.Crash indica pata rota o explosión.</summary>
         public event Action<LandingResult> OnCrashed;
+
+        /// <summary>La nave se ha reiniciado (los efectos visuales deben restaurarse).</summary>
+        public event Action OnReset;
 
         // ------------------------------------------------------------------
         // Estado público de solo lectura
@@ -281,13 +328,15 @@ namespace LunarLander
             bool onPad = (landingPadLayers.value & (1 << collision.gameObject.layer)) != 0;
             bool speedsSafe = vSpeed <= maxLandingVerticalSpeed && hSpeed <= maxLandingHorizontalSpeed;
 
+            Vector2 contactPoint = collision.contactCount > 0 ? collision.GetContact(0).point : rb.position;
+
             if (State == LanderState.Touchdown)
             {
                 // Contactos posteriores mientras se asienta (la otra pata, un pequeño rebote):
                 // solo es un choque si es contra otra superficie o con demasiada velocidad.
                 if (!onPad || !speedsSafe)
                 {
-                    FinishFlight(new LandingResult(false, onPad, vSpeed, hSpeed, angle, currentFuel));
+                    FinishFlight(MakeCrashResult(onPad, vSpeed, hSpeed, angle, contactPoint));
                 }
 
                 return;
@@ -300,7 +349,7 @@ namespace LunarLander
             }
             else
             {
-                FinishFlight(new LandingResult(false, onPad, vSpeed, hSpeed, angle, currentFuel));
+                FinishFlight(MakeCrashResult(onPad, vSpeed, hSpeed, angle, contactPoint));
             }
         }
 
@@ -313,6 +362,7 @@ namespace LunarLander
         {
             RestoreDrag();
 
+            rb.simulated = true; // una explosión la desactiva
             rb.bodyType = RigidbodyType2D.Dynamic;
             rb.velocity = Vector2.zero;
             rb.angularVelocity = 0f;
@@ -327,6 +377,7 @@ namespace LunarLander
             stillTimer = 0f;
 
             SetThrusting(false);
+            OnReset?.Invoke();
             OnFuelChanged?.Invoke(currentFuel, FuelNormalized);
             EmitStatus();
         }
@@ -359,6 +410,36 @@ namespace LunarLander
             if (IsThrusting == value) return;
             IsThrusting = value;
             OnThrustChanged?.Invoke(value);
+        }
+
+        /// <summary>
+        /// Decide el tipo de daño según el punto de contacto y la velocidad:
+        /// golpe en una pata a velocidad moderada = pata rota; cualquier otro caso = explosión.
+        /// </summary>
+        private void ClassifyCrash(Vector2 worldPoint, float speed, out CrashType type, out int legSide)
+        {
+            Vector2 local = transform.InverseTransformPoint(worldPoint);
+            bool onLeg = Mathf.Abs(local.x) > legZoneMinX && local.y < legZoneMaxY;
+
+            if (onLeg && speed < explosionSpeed)
+            {
+                type = CrashType.LegBroken;
+                legSide = local.x > 0f ? 1 : -1;
+            }
+            else
+            {
+                type = CrashType.Explosion;
+                legSide = 0;
+            }
+        }
+
+        private LandingResult MakeCrashResult(bool onPad, float vSpeed, float hSpeed, float angle, Vector2 contactPoint)
+        {
+            float speed = new Vector2(hSpeed, vSpeed).magnitude;
+            ClassifyCrash(contactPoint, speed, out CrashType type, out int side);
+
+            return new LandingResult(false, onPad, vSpeed, hSpeed, angle, currentFuel,
+                                     type, side, contactPoint, rb.velocity);
         }
 
         /// <summary>
@@ -397,10 +478,13 @@ namespace LunarLander
 
             float angle = Mathf.Abs(Mathf.DeltaAngle(rb.rotation, 0f));
 
-            // Ha volcado: no hay aterrizaje posible.
+            // Ha volcado: se rompe la pata del lado que quedó abajo.
+            // (rotación positiva = antihorario = el lado izquierdo baja)
             if (angle > tipOverAngle)
             {
-                FinishFlight(new LandingResult(false, true, touchdownVSpeed, touchdownHSpeed, angle, currentFuel));
+                int side = rb.rotation > 0f ? -1 : 1;
+                FinishFlight(new LandingResult(false, true, touchdownVSpeed, touchdownHSpeed, angle, currentFuel,
+                                               CrashType.LegBroken, side, rb.position, rb.velocity));
                 return;
             }
 
@@ -411,7 +495,17 @@ namespace LunarLander
             if (stillTimer >= settleTime || settleElapsed >= settleTimeout)
             {
                 bool success = angle <= maxLandingAngle;
-                FinishFlight(new LandingResult(success, true, touchdownVSpeed, touchdownHSpeed, angle, currentFuel));
+                if (success)
+                {
+                    FinishFlight(new LandingResult(true, true, touchdownVSpeed, touchdownHSpeed, angle, currentFuel));
+                }
+                else
+                {
+                    // Quedó apoyada pero demasiado inclinada: se da por dañada (pata rota).
+                    int side = rb.rotation > 0f ? -1 : 1;
+                    FinishFlight(new LandingResult(false, true, touchdownVSpeed, touchdownHSpeed, angle, currentFuel,
+                                                   CrashType.LegBroken, side, rb.position, rb.velocity));
+                }
             }
         }
 
@@ -446,6 +540,17 @@ namespace LunarLander
             else
             {
                 State = LanderState.Crashed;
+
+                if (result.Crash == CrashType.Explosion)
+                {
+                    // La nave desaparece: sus trozos los crea el renderer. Se apaga la simulación
+                    // para que el casco invisible no estorbe a los escombros.
+                    rb.velocity = Vector2.zero;
+                    rb.angularVelocity = 0f;
+                    rb.simulated = false;
+                }
+
+                // Con LegBroken la nave sigue simulándose: sin la pata, caerá/volcará sobre el casco.
                 EmitStatus();
                 OnCrashed?.Invoke(result);
             }

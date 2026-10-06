@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace LunarLander
@@ -10,6 +11,9 @@ namespace LunarLander
     ///       descenso con chaflanes y tobera).
     ///   1 - Pata derecha: puntal + plato de apoyo, con el grosor real de las líneas.
     ///   2 - Pata izquierda: espejo de la anterior.
+    ///
+    /// Si el LanderController informa de una pata rota (OnCrashed con CrashType.LegBroken),
+    /// el path de esa pata se elimina para que la nave caiga sobre el casco. OnReset lo restaura.
     ///
     /// La antena y los propulsores RCS se dejan fuera a propósito: son detalles visuales
     /// y no deben engancharse con el terreno.
@@ -57,19 +61,74 @@ namespace LunarLander
             new Vector2(0.46f,  0.10f), // anclaje inferior (pared del cuerpo)
         };
 
+        private LanderController lander;
+        private bool pendingLegBreak;
+        private int pendingLegSide;
+
         private void Reset() => ApplyColliderShape();
-        private void Awake() => ApplyColliderShape();
+
+        private void Awake()
+        {
+            lander = GetComponentInParent<LanderController>();
+            ApplyColliderShape();
+        }
+
+        private void OnEnable()
+        {
+            if (lander == null) return;
+
+            lander.OnCrashed += HandleCrashed;
+            lander.OnReset += HandleReset;
+        }
+
+        private void OnDisable()
+        {
+            if (lander == null) return;
+
+            lander.OnCrashed -= HandleCrashed;
+            lander.OnReset -= HandleReset;
+        }
+
+        private void FixedUpdate()
+        {
+            // El cambio de forma se aplica aquí y no dentro del callback de colisión.
+            if (!pendingLegBreak) return;
+
+            pendingLegBreak = false;
+            ApplyShape(rightBroken: pendingLegSide > 0, leftBroken: pendingLegSide < 0);
+        }
+
+        private void HandleCrashed(LandingResult result)
+        {
+            if (result.Crash != CrashType.LegBroken) return;
+
+            pendingLegBreak = true;
+            pendingLegSide = result.BrokenLegSide;
+        }
+
+        private void HandleReset()
+        {
+            pendingLegBreak = false;
+            ApplyColliderShape();
+        }
 
         [ContextMenu("Actualizar Colisionador")]
-        public void ApplyColliderShape()
+        public void ApplyColliderShape() => ApplyShape(false, false);
+
+        private void ApplyShape(bool rightBroken, bool leftBroken)
         {
             var polyCollider = GetComponent<PolygonCollider2D>();
             if (polyCollider == null) return;
 
-            polyCollider.pathCount = 3;
-            polyCollider.SetPath(0, HullPoints);
-            polyCollider.SetPath(1, RightLegPoints);
-            polyCollider.SetPath(2, MirrorX(RightLegPoints));
+            var paths = new List<Vector2[]> { HullPoints };
+            if (!rightBroken) paths.Add(RightLegPoints);
+            if (!leftBroken) paths.Add(MirrorX(RightLegPoints));
+
+            polyCollider.pathCount = paths.Count;
+            for (int i = 0; i < paths.Count; i++)
+            {
+                polyCollider.SetPath(i, paths[i]);
+            }
         }
 
         /// <summary>Espeja los puntos en X e invierte el orden para mantener el sentido del polígono.</summary>

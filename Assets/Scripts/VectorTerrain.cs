@@ -34,17 +34,20 @@ namespace LunarLander
     ///
     /// - Relieve: ruido "ridged" multi-octava (montañas afiladas) + cráteres decorativos.
     /// - Plataformas: hasta 5 tipos con entornos y dificultades distintos (ver PadKind). Cada una
-    ///   lleva su multiplicador dibujado en vectores, balizas en los extremos (parpadean en las
-    ///   difíciles) y un color según dificultad.
+    ///   lleva balizas en los extremos (parpadean en las difíciles) y un color según dificultad.
     /// - Estética: capas de estratos bajo la superficie y cordilleras lejanas con eliminación
     ///   de líneas ocultas (como en los vectoriales clásicos). Todo es solo visual salvo la
     ///   línea principal, que es la única con colisión.
+    /// - Bandera: escucha LanderController.OnLanded y, tras un aterrizaje correcto, planta e iza
+    ///   una VectorFlag junto a la nave, en la plataforma donde ha aterrizado. Se retira al
+    ///   reiniciar la nave (OnReset) o al regenerar el terreno.
     /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(LineRenderer), typeof(EdgeCollider2D))]
     public sealed class VectorTerrain : MonoBehaviour
     {
         private const string FxPrefix = "TerrainFX_";
+        private const string FlagName = FxPrefix + "Flag";
 
         // ------------------------------------------------------------------
         // Configuración
@@ -95,6 +98,20 @@ namespace LunarLander
         [SerializeField] private Color colorPad5x = new Color(1f, 0.28f, 0.28f); // Rojo
         [SerializeField] private float padLineWidthMultiplier = 1.6f;
 
+        [Header("Bandera de aterrizaje")]
+        [Tooltip("Opcional. Si está vacío se busca un LanderController en la escena.")]
+        [SerializeField] private LanderController lander;
+        [SerializeField] private bool plantFlagOnLanding = true;
+        [Tooltip("Si está desactivado, la tela de la bandera no ondea (queda rígida).")]
+        [SerializeField] private bool flagWaves = true;
+        [SerializeField, Min(0.3f)] private float flagPoleHeight = 1.6f;
+        [SerializeField, Min(0.2f)] private float flagWidth = 0.9f;
+        [SerializeField, Min(0.2f)] private float flagHeight = 0.55f;
+        [Tooltip("Segundos que tarda en crecer el mástil y subir la tela.")]
+        [SerializeField, Min(0.2f)] private float flagRaiseDuration = 1.8f;
+        [Tooltip("Separación horizontal entre el centro de la nave y el mástil.")]
+        [SerializeField, Min(0.5f)] private float flagOffsetFromLander = 1.2f;
+
         // ------------------------------------------------------------------
         // Estado interno
         // ------------------------------------------------------------------
@@ -126,7 +143,9 @@ namespace LunarLander
         private readonly List<LandingPad> landingPads = new List<LandingPad>();
         private readonly List<GameObject> fxObjects = new List<GameObject>();
         private readonly List<LineRenderer> blinkingBeacons = new List<LineRenderer>();
+        private readonly List<VectorFlag> flags = new List<VectorFlag>();
         private float blinkTimer;
+        private bool landerSubscribed;
 
         public IReadOnlyList<LandingPad> LandingPads => landingPads;
 
@@ -137,6 +156,16 @@ namespace LunarLander
         private void Awake()
         {
             GenerateTerrain();
+        }
+
+        private void OnEnable()
+        {
+            SubscribeLander();
+        }
+
+        private void OnDisable()
+        {
+            UnsubscribeLander();
         }
 
         private void Update()
@@ -160,6 +189,12 @@ namespace LunarLander
         {
             maxHeight = Mathf.Max(minHeight + 1f, maxHeight);
 
+            // Permite activar/desactivar el ondeo de una bandera ya plantada desde el Inspector.
+            for (int i = 0; i < flags.Count; i++)
+            {
+                if (flags[i] != null) flags[i].WaveEnabled = flagWaves;
+            }
+
             if (Application.isPlaying && lineRenderer != null && terrainPoints3D != null)
             {
                 RebuildVisuals();
@@ -182,6 +217,20 @@ namespace LunarLander
             return Mathf.Lerp(terrainPoints2D[i].y, terrainPoints2D[i + 1].y, t);
         }
 
+        /// <summary>Retira las banderas plantadas (p. ej. al empezar un nuevo intento).</summary>
+        public void ClearFlags()
+        {
+            for (int i = 0; i < flags.Count; i++)
+            {
+                if (flags[i] == null) continue;
+
+                if (Application.isPlaying) Destroy(flags[i].gameObject);
+                else DestroyImmediate(flags[i].gameObject);
+            }
+
+            flags.Clear();
+        }
+
         /// <summary>
         /// Genera el relieve, coloca las plataformas y reconstruye todos los visuales.
         /// </summary>
@@ -198,6 +247,7 @@ namespace LunarLander
             float startX = -width * 0.5f;
 
             landingPads.Clear();
+            ClearFlags(); // un terreno nuevo no conserva banderas del anterior
 
             // 1. Relieve base: crestas afiladas + colinas suaves.
             float[] heights = BuildBaseHeights(pointCount, stepX, startX);
@@ -250,6 +300,97 @@ namespace LunarLander
             UpdateLineRenderer();
             UpdateCollider();
             RebuildVisuals();
+        }
+
+        // ------------------------------------------------------------------
+        // Bandera de aterrizaje
+        // ------------------------------------------------------------------
+
+        private void SubscribeLander()
+        {
+            if (landerSubscribed) return;
+
+            if (lander == null) lander = FindFirstObjectByType<LanderController>();
+            if (lander == null) return;
+
+            lander.OnLanded += HandleLanded;
+            lander.OnReset += HandleLanderReset;
+            landerSubscribed = true;
+        }
+
+        private void UnsubscribeLander()
+        {
+            if (!landerSubscribed || lander == null) return;
+
+            lander.OnLanded -= HandleLanded;
+            lander.OnReset -= HandleLanderReset;
+            landerSubscribed = false;
+        }
+
+        private void HandleLanderReset()
+        {
+            ClearFlags();
+        }
+
+        private void HandleLanded(LandingResult result)
+        {
+            if (!plantFlagOnLanding || !result.Success || lander == null) return;
+
+            Vector2 landerLocal = transform.InverseTransformPoint(lander.transform.position);
+            int padIndex = FindPadIndex(landerLocal.x);
+            if (padIndex < 0) return;
+
+            PlantFlag(landingPads[padIndex], landerLocal.x);
+        }
+
+        /// <summary>Plataforma sobre la que está la nave (la de centro más cercano a la X dada).</summary>
+        private int FindPadIndex(float localX)
+        {
+            int best = -1;
+            float bestDist = float.MaxValue;
+
+            for (int i = 0; i < landingPads.Count; i++)
+            {
+                LandingPad pad = landingPads[i];
+                const float tolerance = 1f;
+
+                if (localX < pad.startPoint.x - tolerance || localX > pad.endPoint.x + tolerance) continue;
+
+                float dist = Mathf.Abs(localX - pad.Center.x);
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = i;
+                }
+            }
+
+            return best;
+        }
+
+        /// <summary>
+        /// Planta el mástil en la plataforma, al lado de la nave donde haya más sitio, con la tela
+        /// orientada hacia fuera de la nave.
+        /// </summary>
+        private void PlantFlag(LandingPad pad, float landerX)
+        {
+            ClearFlags(); // solo una bandera a la vez
+
+            const float margin = 0.15f;
+            float minX = pad.startPoint.x + margin;
+            float maxX = pad.endPoint.x - margin;
+
+            int direction = (maxX - landerX) >= (landerX - minX) ? 1 : -1;
+            float x = Mathf.Clamp(landerX + direction * flagOffsetFromLander, minX, maxX);
+
+            var go = new GameObject(FlagName);
+            go.transform.SetParent(transform, false);
+            go.transform.localPosition = new Vector3(x, pad.startPoint.y, 0f);
+
+            VectorFlag flag = go.AddComponent<VectorFlag>();
+            flag.Init(ResolveMaterial(), PadColor(pad.multiplier), lineWidth * 0.8f, sortingOrder + 2,
+                      flagPoleHeight, flagWidth, flagHeight, direction, flagRaiseDuration, flagWaves);
+
+            flags.Add(flag);
         }
 
         // ------------------------------------------------------------------
@@ -593,6 +734,11 @@ namespace LunarLander
             for (int i = transform.childCount - 1; i >= 0; i--)
             {
                 Transform child = transform.GetChild(i);
+
+                // La bandera plantada se conserva aunque se reconstruyan los visuales
+                // (por ejemplo al tocar valores en el Inspector con el juego en marcha).
+                if (child.name == FlagName) continue;
+
                 if (child.name.StartsWith(FxPrefix) || child.name.StartsWith("PadVisual_"))
                 {
                     if (Application.isPlaying) Destroy(child.gameObject);
