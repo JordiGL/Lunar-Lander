@@ -13,7 +13,7 @@ namespace LunarLander
     {
         [Header("Referencias del Sistema")]
         [SerializeField] private LanderController lander;
-        [SerializeField] private VectorHUD hud;
+        [SerializeField] private StandardHUD hud; // Actualizado a StandardHUD
         [SerializeField] private VectorTerrain terrain;
 
         [Header("Configuración de Puntuación")]
@@ -33,7 +33,7 @@ namespace LunarLander
         {
             // Búsqueda de referencias por si no se asignaron en el Inspector
             if (lander == null) lander = FindObjectOfType<LanderController>();
-            if (hud == null) hud = FindObjectOfType<VectorHUD>();
+            if (hud == null) hud = FindObjectOfType<StandardHUD>(); // Búsqueda de StandardHUD
             if (terrain == null) terrain = FindObjectOfType<VectorTerrain>();
         }
 
@@ -131,6 +131,7 @@ namespace LunarLander
 
             return 1;
         }
+
         private void ScheduleReset()
         {
             if (resetCoroutine != null)
