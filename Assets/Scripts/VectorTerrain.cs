@@ -1,8 +1,19 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace LunarLander
 {
+    /// <summary>Tipo de plataforma de aterrizaje; define su entorno y su dificultad.</summary>
+    public enum PadKind
+    {
+        Plain,   // Llanura abierta y ancha (fácil)
+        Crater,  // Fondo de un cráter: paredes suaves a ambos lados
+        Ledge,   // Repisa: pared por un lado y precipicio por el otro
+        Peak,    // Cima de una montaña: estrecha, con caída por todos lados
+        Canyon   // Cañón: estrecho entre paredes verticales (muy difícil)
+    }
+
     /// <summary>
     /// Representa una plataforma de aterrizaje plana dentro del terreno lunar.
     /// </summary>
@@ -11,31 +22,58 @@ namespace LunarLander
     {
         public Vector2 startPoint;
         public Vector2 endPoint;
-        public int multiplier; // Multiplicador de puntos (ej: 2x, 3x, 5x)
+        public int multiplier; // Multiplicador de puntos (2x, 3x, 4x, 5x)
+        public PadKind kind;
 
         public Vector2 Center => (startPoint + endPoint) * 0.5f;
         public float Width => Mathf.Abs(endPoint.x - startPoint.x);
     }
 
     /// <summary>
-    /// Genera un terreno lunar vectorial procedural utilizando LineRenderer y EdgeCollider2D.
-    /// Crea picos, valles y zonas llanas destinadas al aterrizaje.
+    /// Terreno lunar vectorial procedural (LineRenderer + EdgeCollider2D).
+    ///
+    /// - Relieve: ruido "ridged" multi-octava (montañas afiladas) + cráteres decorativos.
+    /// - Plataformas: hasta 5 tipos con entornos y dificultades distintos (ver PadKind). Cada una
+    ///   lleva su multiplicador dibujado en vectores, balizas en los extremos (parpadean en las
+    ///   difíciles) y un color según dificultad.
+    /// - Estética: capas de estratos bajo la superficie y cordilleras lejanas con eliminación
+    ///   de líneas ocultas (como en los vectoriales clásicos). Todo es solo visual salvo la
+    ///   línea principal, que es la única con colisión.
     /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(LineRenderer), typeof(EdgeCollider2D))]
     public sealed class VectorTerrain : MonoBehaviour
     {
+        private const string FxPrefix = "TerrainFX_";
+
+        // ------------------------------------------------------------------
+        // Configuración
+        // ------------------------------------------------------------------
+
         [Header("Configuración del Terreno")]
-        [SerializeField, Min(10)] private int segments = 40;
-        [SerializeField] private float width = 50f;
+        [SerializeField, Min(60)] private int segments = 200;
+        [SerializeField] private float width = 80f;
         [SerializeField] private float minHeight = -5f;
-        [SerializeField] private float maxHeight = 2f;
+        [SerializeField] private float maxHeight = 8f;
+        [Tooltip("Cuánto detalle fino (rocas, picos pequeños) tiene el relieve.")]
         [SerializeField, Range(0f, 1f)] private float roughness = 0.5f;
+        [Tooltip("Frecuencia base de las montañas (más alto = más montañas más estrechas).")]
+        [SerializeField, Min(0.005f)] private float mountainFrequency = 0.045f;
+        [Tooltip("0 = colinas suaves, 1 = crestas afiladas.")]
+        [SerializeField, Range(0f, 1f)] private float ridgedMix = 0.65f;
+        [Tooltip("Mayor = más llanuras y picos más escasos pero más altos.")]
+        [SerializeField, Range(0.8f, 2.5f)] private float peakSharpness = 1.35f;
+        [Tooltip("0 = semilla aleatoria cada partida; otro valor = terreno reproducible.")]
         [SerializeField] private int randomSeed = 0;
+        [Tooltip("Cráteres decorativos (lejos de las plataformas).")]
+        [SerializeField, Range(0, 10)] private int craterCount = 4;
 
         [Header("Plataformas de Aterrizaje")]
-        [SerializeField, Range(1, 5)] private int minPads = 2;
-        [SerializeField] private float minPadWidth = 2.5f;
+        [Tooltip("Cuántas plataformas se generan (en orden: Llanura, Cima, Cráter, Cañón, Repisa).")]
+        [SerializeField, Range(2, 5)] private int padCount = 5;
+        [Tooltip("Anchura base; cada tipo usa un factor. La nave mide ~1.85 con las patas.")]
+        [SerializeField, Min(2.2f)] private float minPadWidth = 2.6f;
+        [SerializeField, Min(0f)] private float beaconBlinkRate = 2f;
 
         [Header("Aspecto Visual")]
         [SerializeField] private float lineWidth = 0.05f;
@@ -43,316 +81,451 @@ namespace LunarLander
         [SerializeField] private Material lineMaterial;
         [SerializeField] private int sortingOrder = 5;
 
-        [Header("Plataformas de Aterrizaje (Colores por Dificultad)")]
+        [Header("Estratos bajo la superficie")]
+        [SerializeField, Range(0, 6)] private int strataLines = 3;
+        [SerializeField, Min(0.05f)] private float strataSpacing = 0.45f;
+
+        [Header("Cordilleras de fondo")]
+        [SerializeField, Range(0, 4)] private int backgroundLayers = 3;
+
+        [Header("Plataformas (colores por dificultad)")]
         [SerializeField] private Color colorPad2x = Color.white;
-        [SerializeField] private Color colorPad3x = new Color(1f, 0.92f, 0.2f); // Amarillo
+        [SerializeField] private Color colorPad3x = new Color(1f, 0.92f, 0.2f);  // Amarillo
+        [SerializeField] private Color colorPad4x = new Color(1f, 0.6f, 0.15f);  // Naranja
         [SerializeField] private Color colorPad5x = new Color(1f, 0.28f, 0.28f); // Rojo
         [SerializeField] private float padLineWidthMultiplier = 1.6f;
 
-        // Propiedades e identificadores
+        // ------------------------------------------------------------------
+        // Estado interno
+        // ------------------------------------------------------------------
+
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int ColorId = Shader.PropertyToID("_Color");
+
+        private struct PadPlan
+        {
+            public PadKind kind;
+            public int multiplier;
+            public float widthUnits;
+            public float heightFrac;
+            public int startIdx;
+            public int widthSeg;
+            public float padH;
+            public int wallSide; // Solo Ledge: +1 pared a la derecha, -1 a la izquierda
+        }
 
         private LineRenderer lineRenderer;
         private EdgeCollider2D edgeCollider;
         private MaterialPropertyBlock propertyBlock;
+        private Material runtimeMaterial;
+        private System.Random rng;
+        private float seedOffset;
 
         private Vector3[] terrainPoints3D;
         private Vector2[] terrainPoints2D;
         private readonly List<LandingPad> landingPads = new List<LandingPad>();
-        private readonly List<GameObject> padVisualObjects = new List<GameObject>();
+        private readonly List<GameObject> fxObjects = new List<GameObject>();
+        private readonly List<LineRenderer> blinkingBeacons = new List<LineRenderer>();
+        private float blinkTimer;
 
         public IReadOnlyList<LandingPad> LandingPads => landingPads;
 
+        // ------------------------------------------------------------------
+        // Ciclo de vida
+        // ------------------------------------------------------------------
 
         private void Awake()
         {
-            lineRenderer = GetComponent<LineRenderer>();
-            edgeCollider = GetComponent<EdgeCollider2D>();
-            propertyBlock = new MaterialPropertyBlock();
-
             GenerateTerrain();
+        }
+
+        private void Update()
+        {
+            if (blinkingBeacons.Count == 0 || beaconBlinkRate <= 0f) return;
+
+            blinkTimer += Time.deltaTime;
+            bool on = ((int)(blinkTimer * beaconBlinkRate * 2f) & 1) == 0;
+            for (int i = 0; i < blinkingBeacons.Count; i++)
+            {
+                if (blinkingBeacons[i] != null) blinkingBeacons[i].enabled = on;
+            }
+        }
+
+        private void OnDestroy()
+        {
+            if (runtimeMaterial != null) Destroy(runtimeMaterial);
         }
 
         private void OnValidate()
         {
-            if (Application.isPlaying && lineRenderer != null)
+            maxHeight = Mathf.Max(minHeight + 1f, maxHeight);
+
+            if (Application.isPlaying && lineRenderer != null && terrainPoints3D != null)
             {
-                ApplyStyle();
-                CreateLandingPadVisuals();
+                RebuildVisuals();
             }
         }
 
+        // ------------------------------------------------------------------
+        // API pública
+        // ------------------------------------------------------------------
+
+        /// <summary>Altura del terreno (coordenadas locales) en la X dada.</summary>
+        public float SampleHeight(float x)
+        {
+            if (terrainPoints2D == null || terrainPoints2D.Length < 2) return 0f;
+
+            float step = width / segments;
+            float f = (x + width * 0.5f) / step;
+            int i = Mathf.Clamp(Mathf.FloorToInt(f), 0, terrainPoints2D.Length - 2);
+            float t = Mathf.Clamp01(f - i);
+            return Mathf.Lerp(terrainPoints2D[i].y, terrainPoints2D[i + 1].y, t);
+        }
+
         /// <summary>
-        /// Genera los vértices del terreno, posiciona plataformas llanas y actualiza los componentes.
+        /// Genera el relieve, coloca las plataformas y reconstruye todos los visuales.
         /// </summary>
         [ContextMenu("Regenerar Terreno")]
         public void GenerateTerrain()
         {
-            if (randomSeed != 0) Random.InitState(randomSeed);
+            EnsureComponents();
+
+            rng = new System.Random(randomSeed != 0 ? randomSeed : System.Environment.TickCount);
+            seedOffset = (float)rng.NextDouble() * 1000f;
 
             int pointCount = segments + 1;
-            terrainPoints3D = new Vector3[pointCount];
-            terrainPoints2D = new Vector2[pointCount];
-            landingPads.Clear();
-
-            // Limpieza exhaustiva de cualquier objeto visual antiguo de plataformas
-            ClearLandingPadVisuals();
-
             float stepX = width / segments;
             float startX = -width * 0.5f;
 
-            // 1. Generación de alturas base mediante ruido Perlin
-            float[] heights = new float[pointCount];
-            float seedOffset = Random.Range(0f, 1000f);
+            landingPads.Clear();
 
+            // 1. Relieve base: crestas afiladas + colinas suaves.
+            float[] heights = BuildBaseHeights(pointCount, stepX, startX);
+
+            // 2. Planificar plataformas (tipo, posición y altura).
+            List<PadPlan> plans = PlanPads(pointCount, stepX);
+
+            // 3. Cráteres decorativos, lejos de las plataformas.
+            for (int c = 0; c < craterCount; c++)
+            {
+                AddDecorativeCrater(heights, plans, startX, stepX);
+            }
+
+            // 4. Esculpir el entorno de cada plataforma.
+            for (int p = 0; p < plans.Count; p++)
+            {
+                ShapePad(heights, plans[p], startX, stepX);
+            }
+
+            FlattenPads(heights, plans);
+            for (int i = 0; i < pointCount; i++)
+            {
+                heights[i] = Mathf.Clamp(heights[i], minHeight, maxHeight);
+            }
+            FlattenPads(heights, plans);
+
+            // 5. Registrar plataformas.
+            for (int p = 0; p < plans.Count; p++)
+            {
+                PadPlan plan = plans[p];
+                landingPads.Add(new LandingPad
+                {
+                    startPoint = new Vector2(startX + plan.startIdx * stepX, plan.padH),
+                    endPoint = new Vector2(startX + (plan.startIdx + plan.widthSeg) * stepX, plan.padH),
+                    multiplier = plan.multiplier,
+                    kind = plan.kind
+                });
+            }
+
+            // 6. Puntos finales, línea y colisionador.
+            terrainPoints3D = new Vector3[pointCount];
+            terrainPoints2D = new Vector2[pointCount];
             for (int i = 0; i < pointCount; i++)
             {
                 float x = startX + i * stepX;
-                float sampleX = (x + seedOffset) * roughness * 0.1f;
-                heights[i] = Mathf.Lerp(minHeight, maxHeight, Mathf.PerlinNoise(sampleX, 0f));
+                terrainPoints3D[i] = new Vector3(x, heights[i], 0f);
+                terrainPoints2D[i] = new Vector2(x, heights[i]);
             }
 
-            // 2. Insertar plataformas de aterrizaje estratégicas con dificultad y altura relacionada.
-            List<int> zones = new List<int> { 0, 1, 2 }; // 0: Izquierda, 1: Centro, 2: Derecha
-            for (int i = 0; i < zones.Count; i++)
-            {
-                int r = Random.Range(i, zones.Count);
-                int temp = zones[i];
-                zones[i] = zones[r];
-                zones[r] = temp;
-            }
-
-            for (int z = 0; z < zones.Count; z++)
-            {
-                int zoneIndex = zones[z];
-                int minIdx = Mathf.RoundToInt(pointCount * (0.05f + zoneIndex * 0.3f));
-                int maxIdx = Mathf.RoundToInt(pointCount * (0.28f + zoneIndex * 0.3f));
-
-                int mult = 2;
-                float currentPadWidth = minPadWidth;
-
-                if (z == 0) // Configuración Fácil (2x)
-                {
-                    mult = 2;
-                    currentPadWidth = minPadWidth * 1.5f;
-                }
-                else if (z == 1) // Configuración Media (3x)
-                {
-                    mult = 3;
-                    currentPadWidth = minPadWidth * 1.0f;
-                }
-                else // Configuración Difícil (5x)
-                {
-                    mult = 5;
-                    currentPadWidth = minPadWidth * 0.7f;
-                }
-
-                int padSegmentWidth = Mathf.Max(1, Mathf.CeilToInt(currentPadWidth / stepX));
-                int startIndex = -1;
-
-                if (z == 0) // Fácil (2x)
-                {
-                    float minDiff = float.MaxValue;
-                    for (int i = minIdx; i <= maxIdx - padSegmentWidth; i++)
-                    {
-                        float diff = 0f;
-                        for (int j = 0; j < padSegmentWidth; j++)
-                        {
-                            diff += Mathf.Abs(heights[i + j + 1] - heights[i + j]);
-                        }
-                        if (diff < minDiff)
-                        {
-                            minDiff = diff;
-                            startIndex = i;
-                        }
-                    }
-                }
-                else if (z == 1) // Media (3x) - Valle
-                {
-                    float lowestHeight = float.MaxValue;
-                    for (int i = minIdx; i <= maxIdx - padSegmentWidth; i++)
-                    {
-                        if (heights[i] < lowestHeight)
-                        {
-                            lowestHeight = heights[i];
-                            startIndex = i;
-                        }
-                    }
-                }
-                else // Difícil (5x) - Pico
-                {
-                    float highestHeight = float.MinValue;
-                    for (int i = minIdx; i <= maxIdx - padSegmentWidth; i++)
-                    {
-                        if (heights[i] > highestHeight)
-                        {
-                            highestHeight = heights[i];
-                            startIndex = i;
-                        }
-                    }
-                }
-
-                if (startIndex != -1)
-                {
-                    float padHeight = heights[startIndex];
-
-                    if (z == 1)
-                    {
-                        padHeight = Mathf.Min(padHeight, Mathf.Lerp(minHeight, maxHeight, 0.2f));
-                    }
-                    else if (z == 2)
-                    {
-                        padHeight = Mathf.Max(padHeight, Mathf.Lerp(minHeight, maxHeight, 0.8f));
-                    }
-
-                    for (int k = 0; k <= padSegmentWidth; k++)
-                    {
-                        SetHeightSafe(heights, startIndex + k, padHeight);
-                    }
-
-                    if (z == 0)
-                    {
-                        SetHeightSafe(heights, startIndex - 1, padHeight + 0.1f);
-                        SetHeightSafe(heights, startIndex - 2, padHeight - 0.1f);
-                        SetHeightSafe(heights, startIndex + padSegmentWidth + 1, padHeight - 0.1f);
-                        SetHeightSafe(heights, startIndex + padSegmentWidth + 2, padHeight + 0.1f);
-                    }
-                    else if (z == 1)
-                    {
-                        SetHeightSafe(heights, startIndex - 1, padHeight + 1.5f);
-                        SetHeightSafe(heights, startIndex - 2, padHeight + 3.0f);
-                        SetHeightSafe(heights, startIndex - 3, padHeight + 4.5f);
-
-                        SetHeightSafe(heights, startIndex + padSegmentWidth + 1, padHeight + 1.5f);
-                        SetHeightSafe(heights, startIndex + padSegmentWidth + 2, padHeight + 3.0f);
-                        SetHeightSafe(heights, startIndex + padSegmentWidth + 3, padHeight + 4.5f);
-                    }
-                    else
-                    {
-                        SetHeightSafe(heights, startIndex - 1, padHeight - 2.0f);
-                        SetHeightSafe(heights, startIndex - 2, padHeight - 4.0f);
-                        SetHeightSafe(heights, startIndex - 3, padHeight - 5.5f);
-
-                        SetHeightSafe(heights, startIndex + padSegmentWidth + 1, padHeight - 2.0f);
-                        SetHeightSafe(heights, startIndex + padSegmentWidth + 2, padHeight - 4.0f);
-                        SetHeightSafe(heights, startIndex + padSegmentWidth + 3, padHeight - 5.5f);
-                    }
-
-                    Vector2 padStart = new Vector2(startX + startIndex * stepX, padHeight);
-                    Vector2 padEnd = new Vector2(startX + (startIndex + padSegmentWidth) * stepX, padHeight);
-
-                    landingPads.Add(new LandingPad
-                    {
-                        startPoint = padStart,
-                        endPoint = padEnd,
-                        multiplier = mult
-                    });
-                }
-            }
-
-            // 3. Asignar puntos 2D y 3D
-            for (int i = 0; i < pointCount; i++)
-            {
-                float x = startX + i * stepX;
-                float y = heights[i];
-
-                terrainPoints3D[i] = new Vector3(x, y, 0f);
-                terrainPoints2D[i] = new Vector2(x, y);
-            }
-
-            // 4. Actualizar LineRenderer y EdgeCollider2D
             UpdateLineRenderer();
             UpdateCollider();
-
-            // 5. Generar los realces visuales por color de plataforma
-            CreateLandingPadVisuals();
+            RebuildVisuals();
         }
 
-        private void SetHeightSafe(float[] heights, int index, float value)
+        // ------------------------------------------------------------------
+        // Relieve
+        // ------------------------------------------------------------------
+
+        private float Rand01() => (float)rng.NextDouble();
+
+        private float RandRange(float a, float b) => Mathf.Lerp(a, b, Rand01());
+
+        private float[] BuildBaseHeights(int pointCount, float stepX, float startX)
         {
-            if (index >= 0 && index < heights.Length)
+            float[] v = new float[pointCount];
+            float persistence = Mathf.Lerp(0.35f, 0.6f, roughness);
+            float lo = float.MaxValue, hi = float.MinValue;
+
+            for (int i = 0; i < pointCount; i++)
             {
-                heights[index] = Mathf.Clamp(value, minHeight, maxHeight);
+                float x = startX + i * stepX;
+                float broad = Mathf.PerlinNoise((x + seedOffset) * mountainFrequency * 0.5f, 3.7f);
+                float ridged = RidgeFbm(x, mountainFrequency, 5, persistence, 0f);
+                v[i] = Mathf.Lerp(broad, ridged, ridgedMix);
+                lo = Mathf.Min(lo, v[i]);
+                hi = Mathf.Max(hi, v[i]);
+            }
+
+            float range = Mathf.Max(0.0001f, hi - lo);
+            for (int i = 0; i < pointCount; i++)
+            {
+                float n = Mathf.Pow((v[i] - lo) / range, peakSharpness);
+                v[i] = Mathf.Lerp(minHeight, maxHeight, n);
+            }
+
+            return v;
+        }
+
+        /// <summary>Ruido fractal "ridged": produce crestas y picos afilados en [0,1].</summary>
+        private float RidgeFbm(float x, float frequency, int octaves, float persistence, float offset)
+        {
+            float sum = 0f, amp = 1f, norm = 0f, freq = frequency;
+            for (int o = 0; o < octaves; o++)
+            {
+                float n = Mathf.PerlinNoise((x + seedOffset) * freq + offset, 5.3f + o * 7.1f);
+                float r = 1f - Mathf.Abs(2f * n - 1f);
+                sum += r * r * amp;
+                norm += amp;
+                amp *= persistence;
+                freq *= 2.07f;
+            }
+
+            return sum / norm;
+        }
+
+        private void AddDecorativeCrater(float[] heights, List<PadPlan> plans, float startX, float stepX)
+        {
+            float radius = RandRange(1.6f, 3.6f);
+
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                float cx = RandRange(startX + radius * 2f, startX + width - radius * 2f);
+
+                bool clear = true;
+                for (int p = 0; p < plans.Count && clear; p++)
+                {
+                    float padCx = startX + (plans[p].startIdx + plans[p].widthSeg * 0.5f) * stepX;
+                    float minDist = radius * 1.7f + plans[p].widthUnits * 0.5f + 8f;
+                    if (Mathf.Abs(cx - padCx) < minDist) clear = false;
+                }
+
+                if (!clear) continue;
+
+                float depth = radius * 0.28f;
+                for (int i = 0; i < heights.Length; i++)
+                {
+                    float r = Mathf.Abs(startX + i * stepX - cx);
+                    if (r > radius * 2f) continue;
+
+                    float offset = 0f;
+                    if (r < radius)
+                    {
+                        float t = r / radius;
+                        offset -= depth * (1f - t * t);
+                    }
+
+                    float rim = (r - radius) / (radius * 0.22f);
+                    offset += depth * 0.5f * Mathf.Exp(-rim * rim);
+                    heights[i] += offset;
+                }
+
+                return;
             }
         }
 
-        private void ClearLandingPadVisuals()
+        // ------------------------------------------------------------------
+        // Plataformas
+        // ------------------------------------------------------------------
+
+        private static void KindData(PadKind kind, out int multiplier, out float widthFactor, out float heightFrac)
         {
-            foreach (var go in padVisualObjects)
+            switch (kind)
             {
-                if (go != null)
+                case PadKind.Peak: multiplier = 4; widthFactor = 0.9f; heightFrac = 0.86f; break;
+                case PadKind.Crater: multiplier = 3; widthFactor = 1.4f; heightFrac = 0.22f; break;
+                case PadKind.Canyon: multiplier = 5; widthFactor = 1.0f; heightFrac = 0.12f; break;
+                case PadKind.Ledge: multiplier = 4; widthFactor = 1.2f; heightFrac = 0.50f; break;
+                default: multiplier = 2; widthFactor = 1.7f; heightFrac = 0.40f; break;
+            }
+        }
+
+        private List<PadPlan> PlanPads(int pointCount, float stepX)
+        {
+            PadKind[] priority = { PadKind.Plain, PadKind.Peak, PadKind.Crater, PadKind.Canyon, PadKind.Ledge };
+            var plans = new List<PadPlan>();
+
+            for (int i = 0; i < padCount && i < priority.Length; i++)
+            {
+                KindData(priority[i], out int mult, out float widthFactor, out float heightFrac);
+                float widthUnits = minPadWidth * widthFactor;
+                plans.Add(new PadPlan
                 {
-                    if (Application.isPlaying) Destroy(go);
-                    else DestroyImmediate(go);
+                    kind = priority[i],
+                    multiplier = mult,
+                    widthUnits = widthUnits,
+                    heightFrac = heightFrac,
+                    widthSeg = Mathf.Max(2, Mathf.CeilToInt(widthUnits / stepX)),
+                    wallSide = Rand01() < 0.5f ? -1 : 1
+                });
+            }
+
+            // Barajar para que el orden en el mapa cambie en cada partida.
+            for (int i = plans.Count - 1; i > 0; i--)
+            {
+                int j = rng.Next(i + 1);
+                PadPlan tmp = plans[i];
+                plans[i] = plans[j];
+                plans[j] = tmp;
+            }
+
+            // Repartir en zonas iguales a lo largo del mapa.
+            int margin = 6;
+            int span = pointCount - 2 * margin;
+            float zoneWidth = span / (float)plans.Count;
+
+            for (int i = 0; i < plans.Count; i++)
+            {
+                PadPlan plan = plans[i];
+                float centerIdx = margin + zoneWidth * (i + 0.3f + 0.4f * Rand01());
+                int start = Mathf.RoundToInt(centerIdx - plan.widthSeg * 0.5f);
+                start = Mathf.Clamp(start, margin, pointCount - 1 - margin - plan.widthSeg);
+
+                plan.startIdx = start;
+                plan.padH = Mathf.Lerp(minHeight, maxHeight, plan.heightFrac);
+                plans[i] = plan;
+            }
+
+            return plans;
+        }
+
+        private static float Smooth(float edge0, float edge1, float x)
+        {
+            float t = Mathf.Clamp01((x - edge0) / (edge1 - edge0));
+            return t * t * (3f - 2f * t);
+        }
+
+        /// <summary>Esculpe el relieve alrededor de una plataforma según su tipo.</summary>
+        private void ShapePad(float[] heights, PadPlan plan, float startX, float stepX)
+        {
+            float padStartX = startX + plan.startIdx * stepX;
+            float padEndX = startX + (plan.startIdx + plan.widthSeg) * stepX;
+
+            for (int i = 0; i < heights.Length; i++)
+            {
+                float x = startX + i * stepX;
+                float d;
+                bool right;
+
+                if (x < padStartX) { d = padStartX - x; right = false; }
+                else if (x > padEndX) { d = x - padEndX; right = true; }
+                else { heights[i] = plan.padH; continue; }
+
+                float orig = heights[i];
+                float res = orig;
+
+                switch (plan.kind)
+                {
+                    case PadKind.Plain:
+                        {
+                            // Rampa muy suave que se funde con el terreno.
+                            float target = plan.padH + d * 0.12f;
+                            res = Mathf.Lerp(orig, target, 1f - Smooth(4f, 8f, d));
+                            break;
+                        }
+                    case PadKind.Canyon:
+                        {
+                            // Paredes casi verticales a ambos lados.
+                            float target = plan.padH + Mathf.Min(d * 3f, 6.5f);
+                            res = Mathf.Lerp(orig, Mathf.Max(orig, target), 1f - Smooth(5f, 8f, d));
+                            break;
+                        }
+                    case PadKind.Peak:
+                        {
+                            // Cono de montaña con la plataforma en la cima.
+                            float target = plan.padH - d * 1.1f;
+                            res = Mathf.Max(orig, target);
+                            break;
+                        }
+                    case PadKind.Ledge:
+                        {
+                            bool onWall = (right ? 1 : -1) == plan.wallSide;
+                            if (onWall)
+                            {
+                                float target = plan.padH + Mathf.Min(d * 1.6f, 4.5f);
+                                res = Mathf.Lerp(orig, Mathf.Max(orig, target), 1f - Smooth(5f, 8f, d));
+                            }
+                            else
+                            {
+                                // Precipicio.
+                                float target = plan.padH - d * 2.8f;
+                                res = Mathf.Lerp(orig, Mathf.Min(orig, target), 1f - Smooth(3.5f, 7f, d));
+                            }
+                            break;
+                        }
+                    case PadKind.Crater:
+                        {
+                            const float craterRadius = 5.2f;
+                            const float craterDepth = 2.8f;
+                            float bowl = craterDepth * Smooth(0f, craterRadius, d);
+                            float rimT = (d - craterRadius) / (craterRadius * 0.2f);
+                            float rim = 0.8f * Mathf.Exp(-rimT * rimT);
+                            float target = plan.padH + bowl + rim;
+                            res = Mathf.Lerp(orig, target, 1f - Smooth(craterRadius * 1.15f, craterRadius * 1.7f, d));
+                            break;
+                        }
+                }
+
+                heights[i] = res;
+            }
+        }
+
+        private static void FlattenPads(float[] heights, List<PadPlan> plans)
+        {
+            for (int p = 0; p < plans.Count; p++)
+            {
+                for (int k = 0; k <= plans[p].widthSeg; k++)
+                {
+                    int idx = plans[p].startIdx + k;
+                    if (idx >= 0 && idx < heights.Length) heights[idx] = plans[p].padH;
                 }
             }
-            padVisualObjects.Clear();
-
-            for (int i = transform.childCount - 1; i >= 0; i--)
-            {
-                Transform child = transform.GetChild(i);
-                if (child != null && child.name.StartsWith("PadVisual_"))
-                {
-                    if (Application.isPlaying) Destroy(child.gameObject);
-                    else DestroyImmediate(child.gameObject);
-                }
-            }
         }
 
-        private void CreateLandingPadVisuals()
+        // ------------------------------------------------------------------
+        // Visuales
+        // ------------------------------------------------------------------
+
+        private void EnsureComponents()
         {
-            ClearLandingPadVisuals();
-
-            for (int i = 0; i < landingPads.Count; i++)
-            {
-                var pad = landingPads[i];
-
-                Color padColor = pad.multiplier switch
-                {
-                    5 => colorPad5x, // Rojo (Difícil / Pico)
-                    3 => colorPad3x, // Amarillo (Medio / Valle)
-                    _ => colorPad2x  // Blanco (Fácil / Llano)
-                };
-
-                GameObject padObj = new GameObject($"PadVisual_{i}_{pad.multiplier}x");
-                padObj.transform.SetParent(transform, false);
-                padVisualObjects.Add(padObj);
-
-                LineRenderer lr = padObj.AddComponent<LineRenderer>();
-                lr.useWorldSpace = false;
-                lr.loop = false;
-                lr.positionCount = 2;
-                lr.SetPositions(new Vector3[] { pad.startPoint, pad.endPoint });
-
-                lr.startWidth = lineWidth * padLineWidthMultiplier;
-                lr.endWidth = lineWidth * padLineWidthMultiplier;
-                lr.numCapVertices = 2;
-                lr.sharedMaterial = lineMaterial;
-                lr.sortingOrder = sortingOrder + 1; // Encima del terreno
-
-                lr.startColor = padColor;
-                lr.endColor = padColor;
-
-                MaterialPropertyBlock mpb = new MaterialPropertyBlock();
-                lr.GetPropertyBlock(mpb);
-                mpb.SetColor(BaseColorId, padColor);
-                mpb.SetColor(ColorId, padColor);
-                lr.SetPropertyBlock(mpb);
-            }
+            if (lineRenderer == null) lineRenderer = GetComponent<LineRenderer>();
+            if (edgeCollider == null) edgeCollider = GetComponent<EdgeCollider2D>();
+            if (propertyBlock == null) propertyBlock = new MaterialPropertyBlock();
         }
 
         private void UpdateLineRenderer()
         {
-            if (lineRenderer == null) return;
-
             lineRenderer.useWorldSpace = false;
+            lineRenderer.alignment = LineAlignment.TransformZ;
             lineRenderer.loop = false;
+            lineRenderer.numCornerVertices = 2;
+            lineRenderer.numCapVertices = 2;
             lineRenderer.positionCount = terrainPoints3D.Length;
             lineRenderer.SetPositions(terrainPoints3D);
             lineRenderer.startWidth = lineWidth;
             lineRenderer.endWidth = lineWidth;
             lineRenderer.sortingOrder = sortingOrder;
+            lineRenderer.shadowCastingMode = ShadowCastingMode.Off;
+            lineRenderer.receiveShadows = false;
 
             ApplyStyle();
         }
@@ -367,18 +540,223 @@ namespace LunarLander
 
         private void ApplyStyle()
         {
-            if (lineMaterial != null)
+            lineRenderer.sharedMaterial = ResolveMaterial();
+            ApplyColor(lineRenderer, terrainColor);
+        }
+
+        private void ApplyColor(LineRenderer lr, Color color)
+        {
+            lr.startColor = Color.white;
+            lr.endColor = Color.white;
+
+            lr.GetPropertyBlock(propertyBlock);
+            propertyBlock.SetColor(BaseColorId, color);
+            propertyBlock.SetColor(ColorId, color);
+            lr.SetPropertyBlock(propertyBlock);
+        }
+
+        private Material ResolveMaterial()
+        {
+            if (lineMaterial != null) return lineMaterial;
+            if (runtimeMaterial != null) return runtimeMaterial;
+
+            Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
+            if (shader == null) shader = Shader.Find("Sprites/Default");
+
+            if (shader == null)
             {
-                lineRenderer.sharedMaterial = lineMaterial;
+                Debug.LogError("VectorTerrain: no se encontró ningún shader Unlit. " +
+                               "Asigna un material en el campo 'Line Material'.", this);
+                return null;
             }
 
-            lineRenderer.startColor = Color.white;
-            lineRenderer.endColor = Color.white;
+            runtimeMaterial = new Material(shader) { name = "VectorTerrain (runtime)" };
+            return runtimeMaterial;
+        }
 
-            lineRenderer.GetPropertyBlock(propertyBlock);
-            propertyBlock.SetColor(BaseColorId, terrainColor);
-            propertyBlock.SetColor(ColorId, terrainColor);
-            lineRenderer.SetPropertyBlock(propertyBlock);
+        /// <summary>Reconstruye estilo, estratos, fondo y plataformas sin regenerar el relieve.</summary>
+        private void RebuildVisuals()
+        {
+            EnsureComponents();
+            ClearVisuals();
+            UpdateLineRenderer();
+            CreateStrata();
+            CreateBackgroundRidges();
+            CreatePadVisuals();
+        }
+
+        private void ClearVisuals()
+        {
+            blinkingBeacons.Clear();
+            fxObjects.Clear();
+
+            for (int i = transform.childCount - 1; i >= 0; i--)
+            {
+                Transform child = transform.GetChild(i);
+                if (child.name.StartsWith(FxPrefix) || child.name.StartsWith("PadVisual_"))
+                {
+                    if (Application.isPlaying) Destroy(child.gameObject);
+                    else DestroyImmediate(child.gameObject);
+                }
+            }
+        }
+
+        private LineRenderer CreateLine(string childName, Vector3[] points, Color color, float lineW, int order, bool loop = false)
+        {
+            var go = new GameObject(FxPrefix + childName);
+            go.transform.SetParent(transform, false);
+            fxObjects.Add(go);
+
+            LineRenderer lr = go.AddComponent<LineRenderer>();
+            lr.useWorldSpace = false;
+            lr.alignment = LineAlignment.TransformZ;
+            lr.loop = loop;
+            lr.numCornerVertices = 2;
+            lr.numCapVertices = 2;
+            lr.startWidth = lineW;
+            lr.endWidth = lineW;
+            lr.sortingOrder = order;
+            lr.sharedMaterial = ResolveMaterial();
+            lr.shadowCastingMode = ShadowCastingMode.Off;
+            lr.receiveShadows = false;
+            lr.positionCount = points.Length;
+            lr.SetPositions(points);
+
+            ApplyColor(lr, color);
+            return lr;
+        }
+
+        /// <summary>Contornos paralelos bajo la superficie que se van apagando (efecto de estratos).</summary>
+        private void CreateStrata()
+        {
+            for (int k = 1; k <= strataLines; k++)
+            {
+                var pts = new Vector3[terrainPoints3D.Length];
+                for (int i = 0; i < pts.Length; i++)
+                {
+                    pts[i] = terrainPoints3D[i] + new Vector3(0f, -k * strataSpacing, 0f);
+                }
+
+                float fade = 1f - k / (float)(strataLines + 1);
+                Color c = Color.Lerp(Color.black, terrainColor, 0.15f + 0.45f * fade);
+                CreateLine("Strata_" + k, pts, c, lineWidth * 0.55f, sortingOrder - 1);
+            }
+        }
+
+        /// <summary>
+        /// Cordilleras lejanas dibujadas con eliminación de líneas ocultas: solo se ve el tramo
+        /// que queda por encima del terreno y de las capas más cercanas.
+        /// </summary>
+        private void CreateBackgroundRidges()
+        {
+            if (backgroundLayers <= 0) return;
+
+            int n = Mathf.Max(60, segments);
+            float spanX = width * 1.5f;
+            float step = spanX / n;
+            float startX = -spanX * 0.5f;
+            float range = maxHeight - minHeight;
+
+            // ys[0] = capa más lejana ... ys[last] = más cercana.
+            float[][] ys = new float[backgroundLayers][];
+            for (int L = 0; L < backgroundLayers; L++)
+            {
+                float t = backgroundLayers == 1 ? 0f : L / (float)(backgroundLayers - 1);
+                float baseY = Mathf.Lerp(minHeight, maxHeight, Mathf.Lerp(0.72f, 0.45f, t));
+                float amp = range * Mathf.Lerp(0.6f, 0.42f, t);
+                float freq = mountainFrequency * Mathf.Lerp(0.7f, 1.15f, t);
+
+                ys[L] = new float[n + 1];
+                for (int j = 0; j <= n; j++)
+                {
+                    float x = startX + j * step;
+                    float r = RidgeFbm(x, freq, 4, 0.5f, 100f * (L + 1));
+                    ys[L][j] = baseY + amp * (r - 0.35f);
+                }
+            }
+
+            for (int L = 0; L < backgroundLayers; L++)
+            {
+                float t = backgroundLayers == 1 ? 0f : L / (float)(backgroundLayers - 1);
+                Color color = Color.Lerp(Color.black, terrainColor, Mathf.Lerp(0.16f, 0.32f, t));
+                float lw = lineWidth * 0.7f;
+                int order = sortingOrder - 10 + L;
+
+                var run = new List<Vector3>();
+                int runIndex = 0;
+
+                for (int j = 0; j <= n; j++)
+                {
+                    float x = startX + j * step;
+                    float occluder = SampleHeight(Mathf.Clamp(x, -width * 0.5f, width * 0.5f));
+                    if (x < -width * 0.5f || x > width * 0.5f) occluder = float.MinValue;
+                    for (int M = L + 1; M < backgroundLayers; M++)
+                    {
+                        occluder = Mathf.Max(occluder, ys[M][j]);
+                    }
+
+                    bool visible = ys[L][j] > occluder + 0.15f;
+                    if (visible)
+                    {
+                        run.Add(new Vector3(x, ys[L][j], 0f));
+                    }
+
+                    if ((!visible || j == n) && run.Count > 0)
+                    {
+                        if (run.Count >= 2)
+                        {
+                            CreateLine($"Ridge_{L}_{runIndex++}", run.ToArray(), color, lw, order);
+                        }
+                        run.Clear();
+                    }
+                }
+            }
+        }
+
+        private void CreatePadVisuals()
+        {
+            for (int i = 0; i < landingPads.Count; i++)
+            {
+                LandingPad pad = landingPads[i];
+                Color padColor = PadColor(pad.multiplier);
+                int order = sortingOrder + 1;
+
+                // Línea gruesa de la plataforma.
+                CreateLine($"Pad_{i}_{pad.multiplier}x",
+                    new[] { (Vector3)pad.startPoint, (Vector3)pad.endPoint },
+                    padColor, lineWidth * padLineWidthMultiplier, order);
+
+                // Balizas en los extremos; parpadean en las plataformas difíciles.
+                bool blink = pad.multiplier >= 4;
+                CreateBeacon($"Beacon_{i}_L", pad.startPoint, padColor, blink);
+                CreateBeacon($"Beacon_{i}_R", pad.endPoint, padColor, blink);
+            }
+        }
+
+        private Color PadColor(int multiplier)
+        {
+            if (multiplier >= 5) return colorPad5x;
+            if (multiplier == 4) return colorPad4x;
+            if (multiplier == 3) return colorPad3x;
+            return colorPad2x;
+        }
+
+        private void CreateBeacon(string childName, Vector2 basePoint, Color color, bool blink)
+        {
+            const float h = 0.5f;
+            const float w = 0.1f;
+            var pts = new[]
+            {
+                new Vector3(basePoint.x, basePoint.y, 0f),
+                new Vector3(basePoint.x, basePoint.y + h, 0f),
+                new Vector3(basePoint.x + w, basePoint.y + h + 0.1f, 0f),
+                new Vector3(basePoint.x, basePoint.y + h + 0.2f, 0f),
+                new Vector3(basePoint.x - w, basePoint.y + h + 0.1f, 0f),
+                new Vector3(basePoint.x, basePoint.y + h, 0f),
+            };
+
+            LineRenderer lr = CreateLine(childName, pts, color, lineWidth * 0.7f, sortingOrder + 1);
+            if (blink) blinkingBeacons.Add(lr);
         }
     }
 }
