@@ -4,75 +4,50 @@ using UnityEngine.Rendering;
 
 namespace LunarLander
 {
-    /// <summary>
-    /// Dibuja la nave con estética de vectores (monitor XY estilo Atari, 1979) usando LineRenderer.
-    ///
-    /// Diseño inspirado en el módulo lunar Apollo:
-    /// - Casco: UNA polilínea cerrada (etapa de ascenso facetada + etapa de descenso + tobera),
-    ///   dibujada con el LineRenderer de este GameObject.
-    /// - Detalles: trazos independientes (hijos "Detail_N") más finos: ventana, líneas de panel,
-    ///   antena con plato, propulsores RCS, y patas con puntal, tirante y plato de apoyo.
-    ///   Las patas se definen solo en el lado derecho y se espejan automáticamente.
-    /// - Llama: dos LineRenderers (exterior e interior/núcleo) que parpadean con longitud aleatoria
-    ///   solo mientras el empuje principal está activo.
-    /// - Daños: al recibir OnCrashed, o bien se desprende la pata golpeada (LegBroken), o bien la
-    ///   nave estalla en segmentos de línea con física propia y chispas (Explosion).
-    ///   Al recibir OnReset todo se restaura.
-    /// - Si hay un LanderController (en este objeto o en un padre), se suscribe a sus eventos.
-    ///   También se puede controlar a mano con SetFlameActive(bool).
-    ///
-    /// Sobre el material: lo más fiable en builds es asignar en el Inspector un material con el
-    /// shader "Universal Render Pipeline/Unlit". Si se deja vacío, se crea uno en tiempo de
-    /// ejecución con Shader.Find (URP/Unlit y, como último recurso, Sprites/Default).
-    /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(LineRenderer))]
     public sealed class VectorLanderRenderer : MonoBehaviour
     {
         // ------------------------------------------------------------------
-        // Geometría (unidades locales; ~1.25 de alto por ~1.8 de ancho con patas)
+        // Geometría
         // ------------------------------------------------------------------
 
-        /// <summary>Coordenada Y de la boca de la tobera; de aquí sale la llama.</summary>
         private const float EngineBottomY = -0.38f;
-
         private const float OuterFlameHalfWidth = 0.14f;
         private const float InnerFlameHalfWidth = 0.065f;
         private const float InnerFlameLengthRatio = 0.5f;
         private const int FlamePointCount = 5;
 
-        /// <summary>Los primeros N trazos de MirroredStrokes son la pata (puntal, tirante, plato).</summary>
         private const int LegStrokeCount = 3;
 
-        /// <summary>Punto donde la pata se une al cuerpo (lado derecho; se espeja en X).</summary>
+        // Depósitos de combustible
+        private const float TankMinY = -0.14f;
+        private const float TankMaxY = 0.06f;
+        private const float TankInset = 0.03f;
+        private const float TankRowStep = 0.035f;
+
         private static readonly Vector3 LegAnchor = new Vector3(0.46f, 0.18f, 0f);
 
-        /// <summary>
-        /// Silueta principal (loop cerrado): etapa de ascenso octogonal arriba, etapa de descenso
-        /// más ancha con esquinas achaflanadas abajo, y la campana del motor.
-        /// Orden: cabina arriba-izq -> sentido horario -> cierra en el punto 0.
-        /// </summary>
         private static readonly Vector3[] ShipOutline =
         {
-            new Vector3(-0.20f,  0.66f, 0f), //  0 techo cabina, izquierda
-            new Vector3( 0.20f,  0.66f, 0f), //  1 techo cabina, derecha
-            new Vector3( 0.34f,  0.50f, 0f), //  2 chaflán cabina
-            new Vector3( 0.34f,  0.30f, 0f), //  3 base cabina
-            new Vector3( 0.46f,  0.30f, 0f), //  4 hombro etapa de descenso
-            new Vector3( 0.46f, -0.05f, 0f), //  5 pared derecha
-            new Vector3( 0.36f, -0.20f, 0f), //  6 chaflán inferior derecho
-            new Vector3( 0.14f, -0.20f, 0f), //  7 arranque de la tobera
-            new Vector3( 0.19f, EngineBottomY, 0f), //  8 boca derecha de la tobera
-            new Vector3(-0.19f, EngineBottomY, 0f), //  9 boca izquierda de la tobera
-            new Vector3(-0.14f, -0.20f, 0f), // 10 arranque izquierdo
-            new Vector3(-0.36f, -0.20f, 0f), // 11 chaflán inferior izquierdo
-            new Vector3(-0.46f, -0.05f, 0f), // 12 pared izquierda
-            new Vector3(-0.46f,  0.30f, 0f), // 13 hombro izquierdo
-            new Vector3(-0.34f,  0.30f, 0f), // 14 base cabina izquierda
-            new Vector3(-0.34f,  0.50f, 0f), // 15 chaflán cabina izquierdo
+            new Vector3(-0.20f,  0.66f, 0f),
+            new Vector3( 0.20f,  0.66f, 0f),
+            new Vector3( 0.34f,  0.50f, 0f),
+            new Vector3( 0.34f,  0.30f, 0f),
+            new Vector3( 0.46f,  0.30f, 0f),
+            new Vector3( 0.46f, -0.05f, 0f),
+            new Vector3( 0.36f, -0.20f, 0f),
+            new Vector3( 0.14f, -0.20f, 0f),
+            new Vector3( 0.19f, EngineBottomY, 0f),
+            new Vector3(-0.19f, EngineBottomY, 0f),
+            new Vector3(-0.14f, -0.20f, 0f),
+            new Vector3(-0.36f, -0.20f, 0f),
+            new Vector3(-0.46f, -0.05f, 0f),
+            new Vector3(-0.46f,  0.30f, 0f),
+            new Vector3(-0.34f,  0.30f, 0f),
+            new Vector3(-0.34f,  0.50f, 0f),
         };
 
-        /// <summary>Trazo de detalle: una polilínea (abierta o cerrada).</summary>
         private readonly struct Stroke
         {
             public readonly Vector3[] Points;
@@ -85,39 +60,32 @@ namespace LunarLander
             }
         }
 
-        /// <summary>Trazos centrados o simétricos por sí mismos (se dibujan tal cual).</summary>
         private static readonly Stroke[] CenterStrokes =
         {
-            // Ventana trapezoidal de la cabina
             new Stroke(true,
                 new Vector3(-0.13f, 0.56f, 0f),
                 new Vector3( 0.13f, 0.56f, 0f),
                 new Vector3( 0.09f, 0.41f, 0f),
                 new Vector3(-0.09f, 0.41f, 0f)),
 
-            // Junta entre etapa de ascenso y descenso
             new Stroke(false,
                 new Vector3(-0.34f, 0.30f, 0f),
                 new Vector3( 0.34f, 0.30f, 0f)),
 
-            // Línea de panel de la etapa de descenso
             new Stroke(false,
                 new Vector3(-0.46f, 0.10f, 0f),
                 new Vector3( 0.46f, 0.10f, 0f)),
 
-            // Escotilla / panel central
             new Stroke(true,
                 new Vector3(-0.12f, 0.24f, 0f),
                 new Vector3( 0.12f, 0.24f, 0f),
                 new Vector3( 0.12f, 0.14f, 0f),
                 new Vector3(-0.12f, 0.14f, 0f)),
 
-            // Aro de la tobera (refuerzo de la campana)
             new Stroke(false,
                 new Vector3(-0.155f, -0.29f, 0f),
                 new Vector3( 0.155f, -0.29f, 0f)),
 
-            // Antena con plato
             new Stroke(false,
                 new Vector3(0.08f, 0.66f, 0f),
                 new Vector3(0.14f, 0.86f, 0f)),
@@ -127,47 +95,37 @@ namespace LunarLander
                 new Vector3(0.21f, 0.82f, 0f)),
         };
 
-        /// <summary>
-        /// Trazos definidos solo para el lado DERECHO; se espejan al izquierdo.
-        /// Los primeros LegStrokeCount son la pata (se desprenden juntos al romperse).
-        /// </summary>
         private static readonly Stroke[] MirroredStrokes =
         {
-            // Puntal principal de la pata
             new Stroke(false,
                 new Vector3(0.46f,  0.18f, 0f),
-                new Vector3(0.76f, -0.56f, 0f)),
+                new Vector3(0.85f, -0.56f, 0f)),
 
-            // Tirante inferior (del cuerpo al puntal)
             new Stroke(false,
-                new Vector3(0.38f, -0.19f, 0f),
-                new Vector3(0.65f, -0.30f, 0f)),
+                new Vector3(0.46f, -0.05f, 0f),
+                new Vector3(0.68f, -0.22f, 0f),
+                new Vector3(0.85f, -0.56f, 0f)),
 
-            // Plato de apoyo
             new Stroke(false,
-                new Vector3(0.62f, -0.56f, 0f),
-                new Vector3(0.92f, -0.56f, 0f)),
+                new Vector3(0.70f, -0.56f, 0f),
+                new Vector3(1.00f, -0.56f, 0f)),
 
-            // Propulsor RCS (cajita junto a la cabina)
+            // Propulsores RCS AMPLIADOS (El contorno se queda normal, el relleno será la luz)
             new Stroke(true,
-                new Vector3(0.34f, 0.46f, 0f),
-                new Vector3(0.42f, 0.46f, 0f),
-                new Vector3(0.42f, 0.38f, 0f),
-                new Vector3(0.34f, 0.38f, 0f)),
+                new Vector3(0.34f, 0.48f, 0f),
+                new Vector3(0.46f, 0.48f, 0f),
+                new Vector3(0.46f, 0.36f, 0f),
+                new Vector3(0.34f, 0.36f, 0f)),
 
-            // Remache / panel lateral de la etapa de descenso
             new Stroke(false,
                 new Vector3(0.28f, 0.30f, 0f),
                 new Vector3(0.28f, 0.10f, 0f)),
         };
 
-        // Ids de propiedades para teñir el material sin instanciarlo (URP usa _BaseColor,
-        // los shaders legacy como Sprites/Default usan _Color).
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int ColorId = Shader.PropertyToID("_Color");
 
         private static PhysicsMaterial2D debrisPhysics;
-
         private static PhysicsMaterial2D DebrisPhysics
         {
             get
@@ -176,9 +134,37 @@ namespace LunarLander
                 {
                     debrisPhysics = new PhysicsMaterial2D("VectorDebris") { friction = 0.6f, bounciness = 0.35f };
                 }
-
                 return debrisPhysics;
             }
+        }
+
+        private static Gradient CreateDefaultFuelGradient()
+        {
+            var gradient = new Gradient();
+            gradient.SetKeys(
+                new[]
+                {
+                    new GradientColorKey(new Color(1f, 0.15f, 0.15f), 0f),
+                    new GradientColorKey(new Color(1f, 0.55f, 0.10f), 0.25f),
+                    new GradientColorKey(new Color(1f, 0.92f, 0.20f), 0.5f),
+                    new GradientColorKey(new Color(0.30f, 1f, 0.40f), 1f),
+                },
+                new[]
+                {
+                    new GradientAlphaKey(1f, 0f),
+                    new GradientAlphaKey(1f, 1f),
+                });
+            return gradient;
+        }
+
+        private sealed class FuelTank
+        {
+            public LineRenderer Outline;
+            public LineRenderer Fill;
+            public Vector3[] OutlinePoints;
+            public float XMin;
+            public float XMax;
+            public bool HasFill;
         }
 
         // ------------------------------------------------------------------
@@ -186,53 +172,42 @@ namespace LunarLander
         // ------------------------------------------------------------------
 
         [Header("Referencias")]
-        [Tooltip("Opcional. Si está vacío se busca un LanderController en este objeto o en sus padres.")]
         [SerializeField] private LanderController lander;
 
         [Header("Aspecto de la línea")]
-        [Tooltip("Grosor del contorno principal de la nave.")]
         [SerializeField, Min(0.001f)] private float lineWidth = 0.05f;
-
-        [Tooltip("Grosor de los detalles (ventana, patas, paneles) relativo al contorno.")]
         [SerializeField, Range(0.2f, 1f)] private float detailWidthScale = 0.6f;
-
         [SerializeField] private Color lineColor = Color.white;
-
-        [Tooltip("Material Unlit (URP/Unlit recomendado). Vacío = se crea uno en tiempo de ejecución.")]
         [SerializeField] private Material lineMaterial;
-
-        [Tooltip("Orden de dibujado; súbelo para que la nave quede por encima del terreno.")]
         [SerializeField] private int sortingOrder = 10;
-
-        [Tooltip("Vértices extra en las esquinas para evitar huecos entre segmentos.")]
         [SerializeField, Range(0, 8)] private int cornerVertices = 2;
-
-        [Tooltip("Vértices extra en los extremos de la línea.")]
         [SerializeField, Range(0, 8)] private int capVertices = 2;
+
+        [Header("Luces Laterales (Tilt RCS)")]
+        [Tooltip("Rellena los propulsores RCS para usarlos como indicadores luminosos de alineación.")]
+        [SerializeField] private bool showTiltLight = true;
+        [SerializeField] private Color tiltDefaultColor = Color.white;
+        [SerializeField] private Color tiltSafeColor = new Color(0.30f, 1f, 0.40f);
+        [SerializeField] private Color tiltUnsafeColor = new Color(1f, 0.20f, 0.20f);
+
+        [Header("Depósitos de combustible")]
+        [SerializeField] private bool showFuelTanks = true;
+        [SerializeField] private bool dualTanks = true;
+        [SerializeField] private Gradient fuelGradient = CreateDefaultFuelGradient();
+        [SerializeField, Range(0f, 1f)] private float lowFuelThreshold = 0.25f;
+        [SerializeField, Min(0f)] private float lowFuelBlinkRate = 3f;
 
         [Header("Llama del propulsor")]
         [SerializeField] private Color flameColor = Color.white;
         [SerializeField, Min(0.05f)] private float flameMinLength = 0.30f;
         [SerializeField, Min(0.05f)] private float flameMaxLength = 0.60f;
-
-        [Tooltip("Segundos entre cambios de forma de la llama (parpadeo de estilo retro).")]
         [SerializeField, Min(0.01f)] private float flameFlickerInterval = 0.05f;
 
         [Header("Daños (explosión / pata rota)")]
-        [Tooltip("Longitud máxima de cada trozo; los segmentos más largos se parten en varios.")]
         [SerializeField, Min(0.05f)] private float fragmentMaxLength = 0.35f;
-
-        [Tooltip("Segundos que duran los escombros antes de desaparecer.")]
         [SerializeField, Min(0.5f)] private float debrisLifetime = 4f;
-
-        [Tooltip("Segundos finales de parpadeo y apagado.")]
         [SerializeField, Min(0.1f)] private float debrisFadeTime = 1f;
-
-        [Tooltip("Chispas que salen disparadas en una explosión.")]
         [SerializeField, Range(0, 40)] private int explosionSparkCount = 16;
-
-        [Tooltip("Opcional: capa para los escombros. Créala en Project Settings y desactiva su colisión " +
-                 "consigo misma en la matriz de física para evitar que los trozos choquen entre sí.")]
         [SerializeField] private string debrisLayerName = "";
 
         // ------------------------------------------------------------------
@@ -242,26 +217,39 @@ namespace LunarLander
         private LineRenderer lineRenderer;
         private LineRenderer flameRenderer;
         private LineRenderer flameCoreRenderer;
+
+        private LineRenderer leftTiltFillRenderer;
+        private LineRenderer rightTiltFillRenderer;
+
         private readonly List<LineRenderer> detailRenderers = new List<LineRenderer>();
         private readonly List<Stroke> detailStrokes = new List<Stroke>();
-        private readonly List<int> detailSides = new List<int>();     // +1 derecha, -1 izquierda, 0 centro
+        private readonly List<int> detailSides = new List<int>();
         private readonly List<bool> detailIsLeg = new List<bool>();
         private readonly List<GameObject> spawnedDebris = new List<GameObject>();
+
+        private int rightTiltIndex = -1;
+        private int leftTiltIndex = -1;
+
+        private readonly List<FuelTank> tanks = new List<FuelTank>();
+        private readonly List<Vector3> fillPoints = new List<Vector3>();
+        private float fuelLevel = 1f;
+        private bool fillVisible = true;
+        private bool shipHidden;
 
         private Rigidbody2D landerBody;
         private Collider2D[] landerColliders;
         private int debrisLayer = -1;
 
         private Material activeMaterial;
-        private Material runtimeMaterial; // solo si lo hemos creado nosotros (para destruirlo)
+        private Material runtimeMaterial;
         private MaterialPropertyBlock propertyBlock;
         private Vector3[] flamePoints;
         private Vector3[] flameCorePoints;
         private bool flameActive;
         private float flickerTimer;
 
-        /// <summary>true mientras la llama se está dibujando.</summary>
         public bool IsFlameActive => flameActive;
+        public float FuelLevel => fuelLevel;
 
         // ------------------------------------------------------------------
         // Ciclo de vida
@@ -275,25 +263,17 @@ namespace LunarLander
             flameCorePoints = new Vector3[FlamePointCount];
             activeMaterial = ResolveMaterial();
 
-            if (lander == null)
-            {
-                lander = GetComponentInParent<LanderController>();
-            }
-
-            if (lander != null)
-            {
-                landerBody = lander.GetComponent<Rigidbody2D>();
-            }
+            if (lander == null) lander = GetComponentInParent<LanderController>();
+            if (lander != null) landerBody = lander.GetComponent<Rigidbody2D>();
 
             if (!string.IsNullOrEmpty(debrisLayerName))
-            {
                 debrisLayer = LayerMask.NameToLayer(debrisLayerName);
-            }
 
-            // Casco: el último punto se une con el primero (loop cerrado).
             ConfigureLine(lineRenderer, ShipOutline, true, lineColor, lineWidth);
 
             BuildDetails();
+            BuildTanks();
+            BuildTiltIndicator();
             BuildFlame();
         }
 
@@ -302,6 +282,7 @@ namespace LunarLander
             if (lander != null)
             {
                 lander.OnThrustChanged += SetFlameActive;
+                lander.OnFuelChanged += HandleFuelChanged;
                 lander.OnCrashed += HandleCrashed;
                 lander.OnReset += HandleReset;
                 SetFlameActive(lander.IsThrusting);
@@ -312,23 +293,30 @@ namespace LunarLander
             }
         }
 
+        private void Start()
+        {
+            if (lander != null) SetFuelLevel(lander.FuelNormalized);
+        }
+
         private void OnDisable()
         {
             if (lander != null)
             {
                 lander.OnThrustChanged -= SetFlameActive;
+                lander.OnFuelChanged -= HandleFuelChanged;
                 lander.OnCrashed -= HandleCrashed;
                 lander.OnReset -= HandleReset;
             }
-
             SetFlameActive(false);
         }
 
         private void Update()
         {
+            UpdateFuelWarningBlink();
+            UpdateTiltIndicator();
+
             if (!flameActive) return;
 
-            // Cambia la forma de la llama a intervalos fijos para el típico parpadeo vectorial.
             flickerTimer -= Time.deltaTime;
             if (flickerTimer <= 0f)
             {
@@ -339,38 +327,23 @@ namespace LunarLander
 
         private void OnDestroy()
         {
-            if (runtimeMaterial != null)
-            {
-                Destroy(runtimeMaterial);
-            }
+            if (runtimeMaterial != null) Destroy(runtimeMaterial);
         }
 
         private void OnValidate()
         {
             flameMaxLength = Mathf.Max(flameMinLength, flameMaxLength);
-
-            // Permite ajustar grosor/color desde el Inspector con el juego en marcha.
-            if (Application.isPlaying && lineRenderer != null && flameRenderer != null)
-            {
-                RefreshStyle();
-            }
+            if (Application.isPlaying && lineRenderer != null && flameRenderer != null) RefreshStyle();
         }
 
         // ------------------------------------------------------------------
         // API pública
         // ------------------------------------------------------------------
 
-        /// <summary>
-        /// Muestra u oculta la llama del propulsor. Está conectado a LanderController.OnThrustChanged,
-        /// así que la llama solo aparece cuando el empuje principal está realmente activo
-        /// (tecla pulsada y con combustible).
-        /// </summary>
         public void SetFlameActive(bool active)
         {
             flameActive = active;
-
             if (flameRenderer == null) return;
-
             flameRenderer.enabled = active;
             flameCoreRenderer.enabled = active;
 
@@ -378,6 +351,249 @@ namespace LunarLander
             {
                 flickerTimer = flameFlickerInterval;
                 DrawFlame(Random.Range(flameMinLength, flameMaxLength));
+            }
+        }
+
+        public void SetFuelLevel(float normalized)
+        {
+            fuelLevel = Mathf.Clamp01(normalized);
+            RedrawTanks();
+        }
+
+        // ------------------------------------------------------------------
+        // Luces Laterales (Relleno sólido de propulsores RCS)
+        // ------------------------------------------------------------------
+
+        private void BuildTiltIndicator()
+        {
+            Transform oldL = transform.Find("LeftTiltFill");
+            if (oldL != null) Destroy(oldL.gameObject);
+
+            Transform oldR = transform.Find("RightTiltFill");
+            if (oldR != null) Destroy(oldR.gameObject);
+
+            if (!showTiltLight) return;
+
+            leftTiltFillRenderer = CreateChildLine("LeftTiltFill");
+            rightTiltFillRenderer = CreateChildLine("RightTiltFill");
+
+            // Centro del cuadrado RCS (actualizado para coincidir con la caja más grande)
+            float yCenter = 0.42f;
+            float xCenter = 0.40f;
+
+            // La caja mide ahora 0.12 de lado. Usamos un grosor de relleno de 0.09.
+            float fillSize = 0.09f;
+
+            Vector3[] rightFillPoints = new Vector3[] {
+                new Vector3(xCenter - fillSize * 0.5f, yCenter, 0f),
+                new Vector3(xCenter + fillSize * 0.5f, yCenter, 0f)
+            };
+
+            Vector3[] leftFillPoints = new Vector3[] {
+                new Vector3(-xCenter + fillSize * 0.5f, yCenter, 0f),
+                new Vector3(-xCenter - fillSize * 0.5f, yCenter, 0f)
+            };
+
+            ConfigureLine(rightTiltFillRenderer, rightFillPoints, false, tiltDefaultColor, fillSize);
+            rightTiltFillRenderer.sortingOrder = sortingOrder + 1; // Un poco por encima para asegurar visibilidad
+
+            ConfigureLine(leftTiltFillRenderer, leftFillPoints, false, tiltDefaultColor, fillSize);
+            leftTiltFillRenderer.sortingOrder = sortingOrder + 1;
+
+            rightTiltIndex = -1;
+            leftTiltIndex = -1;
+
+            // Buscamos los cuadrados RCS ya dibujados (con Y superior actualizado a 0.48f)
+            for (int i = 0; i < detailStrokes.Count; i++)
+            {
+                if (detailStrokes[i].Loop && detailStrokes[i].Points.Length == 4 &&
+                    Mathf.Approximately(detailStrokes[i].Points[0].y, 0.48f))
+                {
+                    if (detailSides[i] > 0) rightTiltIndex = i;
+                    else if (detailSides[i] < 0) leftTiltIndex = i;
+                }
+            }
+        }
+
+        private void GetTiltColors(out Color leftColor, out Color rightColor)
+        {
+            // Estado por defecto: Blanco brillante
+            leftColor = tiltDefaultColor;
+            rightColor = tiltDefaultColor;
+
+            if (lander == null) return;
+
+            float deltaAngle = Mathf.DeltaAngle(0f, transform.eulerAngles.z);
+            float absAngle = Mathf.Abs(deltaAngle);
+
+            bool badTilt = absAngle > lander.MaxLandingAngle;
+            bool goodSpeed = Mathf.Abs(lander.Velocity.x) <= lander.MaxLandingHorizontalSpeed &&
+                             Mathf.Abs(lander.Velocity.y) <= lander.MaxLandingVerticalSpeed;
+
+            if (badTilt)
+            {
+                // Si deltaAngle es positivo (gira a la izquierda), el lado izquierdo baja. Peligro en la izquierda.
+                if (deltaAngle > 0f)
+                {
+                    leftColor = tiltUnsafeColor;
+                }
+                else
+                {
+                    rightColor = tiltUnsafeColor;
+                }
+            }
+            else if (goodSpeed)
+            {
+                // Buen ángulo y buena velocidad = ATERRIZAJE SEGURO
+                leftColor = tiltSafeColor;
+                rightColor = tiltSafeColor;
+            }
+        }
+
+        private void UpdateTiltIndicator()
+        {
+            if (!showTiltLight || shipHidden) return;
+
+            GetTiltColors(out Color leftColor, out Color rightColor);
+
+            if (leftTiltFillRenderer != null) ApplyColor(leftTiltFillRenderer, leftColor);
+            if (rightTiltFillRenderer != null) ApplyColor(rightTiltFillRenderer, rightColor);
+        }
+
+        // ------------------------------------------------------------------
+        // Depósitos de combustible
+        // ------------------------------------------------------------------
+
+        private void HandleFuelChanged(float fuel, float normalized)
+        {
+            SetFuelLevel(normalized);
+        }
+
+        private void BuildTanks()
+        {
+            tanks.Clear();
+            if (!showFuelTanks) return;
+
+            if (dualTanks)
+            {
+                AddTank(0.20f, 0.36f);
+                AddTank(-0.36f, -0.20f);
+            }
+            else
+            {
+                AddTank(-0.10f, 0.10f);
+            }
+            RedrawTanks();
+        }
+
+        private void AddTank(float xMin, float xMax)
+        {
+            var points = new[]
+            {
+                new Vector3(xMin, TankMinY, 0f),
+                new Vector3(xMax, TankMinY, 0f),
+                new Vector3(xMax, TankMaxY, 0f),
+                new Vector3(xMin, TankMaxY, 0f),
+            };
+
+            var tank = new FuelTank
+            {
+                XMin = xMin,
+                XMax = xMax,
+                OutlinePoints = points,
+                Outline = CreateChildLine("FuelTank_" + tanks.Count),
+                Fill = CreateChildLine("FuelFill_" + tanks.Count),
+            };
+
+            float detailWidth = lineWidth * detailWidthScale;
+            ConfigureLine(tank.Outline, points, true, lineColor, detailWidth);
+            ConfigureLine(tank.Fill, new[] { Vector3.zero, Vector3.zero }, false, lineColor, detailWidth * 0.8f);
+
+            tanks.Add(tank);
+        }
+
+        private void RedrawTanks()
+        {
+            if (tanks.Count == 0) return;
+
+            Color color = fuelGradient.Evaluate(fuelLevel);
+
+            for (int t = 0; t < tanks.Count; t++)
+            {
+                FuelTank tank = tanks[t];
+                ApplyColor(tank.Outline, color);
+                ApplyColor(tank.Fill, color);
+
+                BuildFillPoints(tank);
+
+                tank.HasFill = fillPoints.Count > 0;
+                tank.Fill.positionCount = fillPoints.Count;
+                for (int i = 0; i < fillPoints.Count; i++)
+                {
+                    tank.Fill.SetPosition(i, fillPoints[i]);
+                }
+            }
+            ApplyTankVisibility();
+        }
+
+        private void BuildFillPoints(FuelTank tank)
+        {
+            fillPoints.Clear();
+            if (fuelLevel <= 0.0001f) return;
+
+            float xL = tank.XMin + TankInset;
+            float xR = tank.XMax - TankInset;
+            float bottom = TankMinY + TankInset;
+            float height = (TankMaxY - TankMinY) - 2f * TankInset;
+            float levelHeight = fuelLevel * height;
+
+            int fullRows = Mathf.FloorToInt(levelHeight / TankRowStep);
+            int row = 0;
+
+            for (; row <= fullRows; row++)
+            {
+                AddFillRow(row, bottom + row * TankRowStep, xL, xR);
+            }
+
+            if (levelHeight - fullRows * TankRowStep > 0.005f)
+            {
+                AddFillRow(row, bottom + levelHeight, xL, xR);
+            }
+        }
+
+        private void AddFillRow(int rowIndex, float y, float xL, float xR)
+        {
+            if ((rowIndex & 1) == 0)
+            {
+                fillPoints.Add(new Vector3(xL, y, 0f));
+                fillPoints.Add(new Vector3(xR, y, 0f));
+            }
+            else
+            {
+                fillPoints.Add(new Vector3(xR, y, 0f));
+                fillPoints.Add(new Vector3(xL, y, 0f));
+            }
+        }
+
+        private void UpdateFuelWarningBlink()
+        {
+            if (tanks.Count == 0 || shipHidden) return;
+
+            bool warning = fuelLevel > 0f && fuelLevel <= lowFuelThreshold && lowFuelBlinkRate > 0f;
+            bool visible = !warning || ((int)(Time.time * lowFuelBlinkRate * 2f) & 1) == 0;
+
+            if (visible == fillVisible) return;
+
+            fillVisible = visible;
+            ApplyTankVisibility();
+        }
+
+        private void ApplyTankVisibility()
+        {
+            for (int t = 0; t < tanks.Count; t++)
+            {
+                tanks[t].Outline.enabled = !shipHidden;
+                tanks[t].Fill.enabled = !shipHidden && fillVisible && tanks[t].HasFill;
             }
         }
 
@@ -403,13 +619,14 @@ namespace LunarLander
 
         private void HandleReset()
         {
-            // Quita los escombros que queden y restaura toda la nave.
             for (int i = 0; i < spawnedDebris.Count; i++)
             {
                 if (spawnedDebris[i] != null) Destroy(spawnedDebris[i]);
             }
-
             spawnedDebris.Clear();
+
+            shipHidden = false;
+            fillVisible = true;
 
             lineRenderer.enabled = true;
             for (int i = 0; i < detailRenderers.Count; i++)
@@ -417,10 +634,16 @@ namespace LunarLander
                 detailRenderers[i].enabled = true;
             }
 
+            if (leftTiltFillRenderer != null) leftTiltFillRenderer.enabled = showTiltLight;
+            if (rightTiltFillRenderer != null) rightTiltFillRenderer.enabled = showTiltLight;
+
+            if (lander != null) fuelLevel = lander.FuelNormalized;
+            RedrawTanks();
+            UpdateTiltIndicator();
+
             SetFlameActive(lander != null && lander.IsThrusting);
         }
 
-        /// <summary>La pata golpeada se desprende en sus piezas y salen unas chispas del anclaje.</summary>
         private void BreakLeg(LandingResult result)
         {
             int side = result.BrokenLegSide >= 0 ? 1 : -1;
@@ -436,13 +659,11 @@ namespace LunarLander
 
                 detailRenderers[i].enabled = false;
                 SpawnStrokeFragments(detailStrokes[i].Points, detailStrokes[i].Loop,
-                                     lineWidth * detailWidthScale, anchor, baseVelocity, speed, 1f);
+                                     lineWidth * detailWidthScale, lineColor, anchor, baseVelocity, speed, 1f);
             }
-
             SpawnSparks(8, anchor, speed + 1.5f, baseVelocity);
         }
 
-        /// <summary>La nave estalla: cada segmento del dibujo sale despedido y caen con física propia.</summary>
         private void Explode(LandingResult result)
         {
             Vector2 baseVelocity = result.LanderVelocity;
@@ -451,18 +672,36 @@ namespace LunarLander
 
             Vector2 center = Vector2.Lerp(transform.position, result.ImpactPoint, 0.5f);
 
-            // Oculta la nave entera (el casco usa el LineRenderer de este objeto).
+            shipHidden = true;
             lineRenderer.enabled = false;
             for (int i = 0; i < detailRenderers.Count; i++)
             {
                 detailRenderers[i].enabled = false;
             }
 
-            SpawnStrokeFragments(ShipOutline, true, lineWidth, center, baseVelocity, fragmentSpeed, 1f);
+            if (leftTiltFillRenderer != null) leftTiltFillRenderer.enabled = false;
+            if (rightTiltFillRenderer != null) rightTiltFillRenderer.enabled = false;
+            ApplyTankVisibility();
+
+            SpawnStrokeFragments(ShipOutline, true, lineWidth, lineColor, center, baseVelocity, fragmentSpeed, 1f);
+
+            GetTiltColors(out Color leftColor, out Color rightColor);
+
             for (int i = 0; i < detailStrokes.Count; i++)
             {
+                Color strokeColor = lineColor;
+                if (i == rightTiltIndex) strokeColor = rightColor;
+                else if (i == leftTiltIndex) strokeColor = leftColor;
+
                 SpawnStrokeFragments(detailStrokes[i].Points, detailStrokes[i].Loop,
-                                     lineWidth * detailWidthScale, center, baseVelocity, fragmentSpeed, 1f);
+                                     lineWidth * detailWidthScale, strokeColor, center, baseVelocity, fragmentSpeed, 1f);
+            }
+
+            Color tankColor = fuelGradient.Evaluate(fuelLevel);
+            for (int t = 0; t < tanks.Count; t++)
+            {
+                SpawnStrokeFragments(tanks[t].OutlinePoints, true, lineWidth * detailWidthScale, tankColor,
+                                     center, baseVelocity, fragmentSpeed, 1f);
             }
 
             SpawnSparks(explosionSparkCount, center, fragmentSpeed * 1.4f, baseVelocity);
@@ -475,8 +714,7 @@ namespace LunarLander
                 : new Collider2D[0];
         }
 
-        /// <summary>Convierte un trazo (polilínea) en segmentos sueltos que salen despedidos desde center.</summary>
-        private void SpawnStrokeFragments(Vector3[] points, bool loop, float width, Vector2 center,
+        private void SpawnStrokeFragments(Vector3[] points, bool loop, float width, Color color, Vector2 center,
                                           Vector2 baseVelocity, float speed, float lifetimeScale)
         {
             int n = points.Length;
@@ -487,7 +725,6 @@ namespace LunarLander
             {
                 Vector3 a = transform.TransformPoint(points[s]);
                 Vector3 b = transform.TransformPoint(points[(s + 1) % n]);
-
                 float length = Vector3.Distance(a, b);
                 if (length < 0.01f) continue;
 
@@ -506,13 +743,12 @@ namespace LunarLander
                     Vector2 velocity = baseVelocity * 0.5f + dir * Random.Range(speed * 0.5f, speed);
                     float life = Random.Range(debrisLifetime * 0.7f, debrisLifetime) * lifetimeScale;
 
-                    SpawnFragment(pa, pb, lineColor, width, velocity, Random.Range(-540f, 540f),
+                    SpawnFragment(pa, pb, color, width, velocity, Random.Range(-540f, 540f),
                                   true, gravity, 0.1f, life);
                 }
             }
         }
 
-        /// <summary>Chispas: segmentos cortos y brillantes, sin colisión y de vida corta.</summary>
         private void SpawnSparks(int count, Vector2 center, float speed, Vector2 baseVelocity)
         {
             for (int i = 0; i < count; i++)
@@ -557,12 +793,10 @@ namespace LunarLander
             if (collide)
             {
                 body.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
-
                 var box = go.AddComponent<BoxCollider2D>();
                 box.size = new Vector2(length, 0.04f);
                 box.sharedMaterial = DebrisPhysics;
 
-                // Los trozos nacen sobre la nave: no deben empujarla ni chocar con ella.
                 if (landerColliders != null)
                 {
                     for (int i = 0; i < landerColliders.Length; i++)
@@ -579,7 +813,6 @@ namespace LunarLander
         // Internos
         // ------------------------------------------------------------------
 
-        /// <summary>Crea un hijo con LineRenderer por cada trazo de detalle (con espejado).</summary>
         private void BuildDetails()
         {
             detailStrokes.Clear();
@@ -623,7 +856,6 @@ namespace LunarLander
                 Vector3 p = source.Points[i];
                 points[i] = new Vector3(-p.x, p.y, p.z);
             }
-
             return new Stroke(source.Loop, points);
         }
 
@@ -643,15 +875,13 @@ namespace LunarLander
             ConfigureLine(flameRenderer, flamePoints, false, flameColor, lineWidth);
             ConfigureLine(flameCoreRenderer, flameCorePoints, false, flameColor, lineWidth * detailWidthScale);
 
-            flameRenderer.enabled = false; // ocultas hasta que se active el empuje
+            flameRenderer.enabled = false;
             flameCoreRenderer.enabled = false;
         }
 
-        /// <summary>Calcula los puntos de la llama exterior y del núcleo para la longitud dada.</summary>
         private void FillFlamePoints(float length)
         {
-            float sway = Random.Range(-0.04f, 0.04f); // ligera oscilación lateral de la punta
-
+            float sway = Random.Range(-0.04f, 0.04f);
             FillTeardrop(flamePoints, length, OuterFlameHalfWidth, sway);
             FillTeardrop(flameCorePoints, length * InnerFlameLengthRatio, InnerFlameHalfWidth, sway * 0.5f);
         }
@@ -675,11 +905,10 @@ namespace LunarLander
             flameCoreRenderer.SetPositions(flameCorePoints);
         }
 
-        /// <summary>Configura un LineRenderer completo por código (casco, detalles, llamas y escombros).</summary>
         private void ConfigureLine(LineRenderer lr, Vector3[] points, bool loop, Color color, float width)
         {
-            lr.useWorldSpace = false;                    // la línea se mueve y rota con su transform
-            lr.alignment = LineAlignment.TransformZ;     // el plano de la línea mira a lo largo del eje Z local
+            lr.useWorldSpace = false;
+            lr.alignment = LineAlignment.TransformZ;
             lr.textureMode = LineTextureMode.Stretch;
             lr.loop = loop;
             lr.numCornerVertices = cornerVertices;
@@ -689,7 +918,6 @@ namespace LunarLander
             lr.sortingOrder = sortingOrder;
             lr.sharedMaterial = activeMaterial;
 
-            // Es una línea Unlit: sin sombras ni sondas de luz/reflejo ni vectores de movimiento.
             lr.shadowCastingMode = ShadowCastingMode.Off;
             lr.receiveShadows = false;
             lr.lightProbeUsage = LightProbeUsage.Off;
@@ -702,11 +930,6 @@ namespace LunarLander
             ApplyColor(lr, color);
         }
 
-        /// <summary>
-        /// Tiñe la línea mediante un MaterialPropertyBlock (no modifica el material compartido).
-        /// El color de vértice se deja en blanco para no multiplicar el tinte dos veces en
-        /// shaders que lo usan (Sprites/Default); URP/Unlit ignora el color de vértice.
-        /// </summary>
         private void ApplyColor(LineRenderer lr, Color color)
         {
             lr.startColor = Color.white;
@@ -728,22 +951,31 @@ namespace LunarLander
                               lineColor, lineWidth * detailWidthScale);
             }
 
+            float detailWidth = lineWidth * detailWidthScale;
+            for (int t = 0; t < tanks.Count; t++)
+            {
+                ConfigureLine(tanks[t].Outline, tanks[t].OutlinePoints, true, lineColor, detailWidth);
+                ConfigureLine(tanks[t].Fill, new[] { Vector3.zero, Vector3.zero }, false, lineColor, detailWidth * 0.8f);
+            }
+
+            RedrawTanks();
+
             FillFlamePoints(flameMaxLength);
             ConfigureLine(flameRenderer, flamePoints, false, flameColor, lineWidth);
             ConfigureLine(flameCoreRenderer, flameCorePoints, false, flameColor, lineWidth * detailWidthScale);
+
+            BuildTiltIndicator();
+            UpdateTiltIndicator();
         }
 
-        /// <summary>Devuelve el material asignado o, si falta, crea uno Unlit básico.</summary>
         private Material ResolveMaterial()
         {
             if (lineMaterial != null) return lineMaterial;
 
-            // Shader.Find solo es fiable en el Editor o si el shader entra en el build
-            // (por eso se recomienda asignar el material en el Inspector).
             Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
             if (shader == null)
             {
-                shader = Shader.Find("Sprites/Default");
+                Shader.Find("Sprites/Default");
             }
 
             if (shader == null)
