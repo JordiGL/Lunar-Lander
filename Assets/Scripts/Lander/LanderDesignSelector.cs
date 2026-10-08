@@ -5,38 +5,26 @@ namespace LunarLander
     [DisallowMultipleComponent]
     public sealed class LanderDesignSelector : MonoBehaviour
     {
-        [Tooltip("Arrastra aquí el GameObject de tu nave (el que tiene el VectorLanderRenderer).")]
-        [SerializeField] private VectorLanderRenderer targetRenderer;
+        [Header("Naves (GameObjects)")]
+        [SerializeField] private GameObject classicLander;
+        [SerializeField] private GameObject modernLander;
+        [SerializeField] private GameObject futureLander;
 
         [Header("Controles")]
         [SerializeField] private KeyCode toggleKey = KeyCode.T;
 
-        public LanderDesign Current
-        {
-            get
-            {
-                if (targetRenderer != null) return targetRenderer.Design;
-                return VectorLanderRenderer.LoadSavedDesign(LanderDesign.Classic);
-            }
-        }
+        private LanderDesign currentDesign;
+        public LanderDesign Current => currentDesign;
 
         private void Start()
         {
-            if (targetRenderer == null) targetRenderer = FindObjectOfType<VectorLanderRenderer>();
-
-            // Forzar el diseño guardado al iniciar
-            if (targetRenderer != null)
-            {
-                targetRenderer.SetDesign(VectorLanderRenderer.LoadSavedDesign(LanderDesign.Classic), false);
-            }
+            currentDesign = VectorLanderRendererBase.LoadSavedDesign(LanderDesign.Classic);
+            ApplySelection(currentDesign);
         }
 
         private void Update()
         {
-            if (Input.GetKeyDown(toggleKey))
-            {
-                Toggle();
-            }
+            if (Input.GetKeyDown(toggleKey)) Toggle();
         }
 
         public void SelectClassic() => Select(LanderDesign.Classic);
@@ -47,20 +35,22 @@ namespace LunarLander
 
         public void Toggle()
         {
-            int nextDesign = ((int)Current + 1) % 3;
+            int nextDesign = ((int)currentDesign + 1) % 3;
             Select((LanderDesign)nextDesign);
         }
 
         public void Select(LanderDesign design)
         {
-            if (targetRenderer != null)
-            {
-                targetRenderer.SetDesign(design, true); // Esto redibuja la nave automáticamente
-            }
-            else
-            {
-                VectorLanderRenderer.SaveDesign(design);
-            }
+            currentDesign = design;
+            VectorLanderRendererBase.SaveDesign(design);
+            ApplySelection(design);
+        }
+
+        private void ApplySelection(LanderDesign design)
+        {
+            if (classicLander != null) classicLander.SetActive(design == LanderDesign.Classic);
+            if (modernLander != null) modernLander.SetActive(design == LanderDesign.Modern);
+            if (futureLander != null) futureLander.SetActive(design == LanderDesign.Future);
         }
     }
 }
