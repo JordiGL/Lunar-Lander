@@ -4,7 +4,7 @@ using UnityEngine.Rendering;
 
 namespace LunarLander
 {
-    public enum LanderDesign { Classic = 0, Modern = 1, Future = 2 }
+    public enum LanderDesign { Classic = 0, Modern = 1, Future = 2, Hex = 3, Starship = 4, Explorer = 5 }
 
     [DisallowMultipleComponent]
     [RequireComponent(typeof(LineRenderer))]
