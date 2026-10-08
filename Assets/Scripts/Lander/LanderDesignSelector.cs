@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace LunarLander
@@ -5,21 +6,22 @@ namespace LunarLander
     [DisallowMultipleComponent]
     public sealed class LanderDesignSelector : MonoBehaviour
     {
-        [Header("Naves (GameObjects)")]
-        [SerializeField] private GameObject classicLander;
-        [SerializeField] private GameObject modernLander;
-        [SerializeField] private GameObject futureLander;
+        [Header("Lista de Renderers de Landers")]
+        [Tooltip("Añade aquí los Renderers de cada variante (Classic, Modern, Future, etc.).")]
+        [SerializeField] private List<VectorLanderRendererBase> landerRenderers = new List<VectorLanderRendererBase>();
 
         [Header("Controles")]
         [SerializeField] private KeyCode toggleKey = KeyCode.T;
 
-        private LanderDesign currentDesign;
-        public LanderDesign Current => currentDesign;
+        private int currentIndex;
+        public int CurrentIndex => currentIndex;
+        public VectorLanderRendererBase CurrentRenderer => (currentIndex >= 0 && currentIndex < landerRenderers.Count) ? landerRenderers[currentIndex] : null;
 
         private void Start()
         {
-            currentDesign = VectorLanderRendererBase.LoadSavedDesign(LanderDesign.Classic);
-            ApplySelection(currentDesign);
+            // Cargamos la nave guardada (por índice)
+            int savedIndex = PlayerPrefs.GetInt(VectorLanderRendererBase.SelectionKey, 0);
+            SelectIndex(savedIndex);
         }
 
         private void Update()
@@ -27,30 +29,37 @@ namespace LunarLander
             if (Input.GetKeyDown(toggleKey)) Toggle();
         }
 
-        public void SelectClassic() => Select(LanderDesign.Classic);
-        public void SelectModern() => Select(LanderDesign.Modern);
-        public void SelectFuture() => Select(LanderDesign.Future);
+        public void SelectIndex(int index)
+        {
+            if (landerRenderers == null || landerRenderers.Count == 0) return;
 
-        public void SelectIndex(int index) => Select((LanderDesign)Mathf.Clamp(index, 0, 2));
+            currentIndex = Mathf.Clamp(index, 0, landerRenderers.Count - 1);
+
+            // Guardamos la selección
+            PlayerPrefs.SetInt(VectorLanderRendererBase.SelectionKey, currentIndex);
+            PlayerPrefs.Save();
+
+            ApplySelection();
+        }
 
         public void Toggle()
         {
-            int nextDesign = ((int)currentDesign + 1) % 3;
-            Select((LanderDesign)nextDesign);
+            if (landerRenderers == null || landerRenderers.Count == 0) return;
+
+            int next = (currentIndex + 1) % landerRenderers.Count;
+            SelectIndex(next);
         }
 
-        public void Select(LanderDesign design)
+        private void ApplySelection()
         {
-            currentDesign = design;
-            VectorLanderRendererBase.SaveDesign(design);
-            ApplySelection(design);
-        }
-
-        private void ApplySelection(LanderDesign design)
-        {
-            if (classicLander != null) classicLander.SetActive(design == LanderDesign.Classic);
-            if (modernLander != null) modernLander.SetActive(design == LanderDesign.Modern);
-            if (futureLander != null) futureLander.SetActive(design == LanderDesign.Future);
+            for (int i = 0; i < landerRenderers.Count; i++)
+            {
+                if (landerRenderers[i] != null)
+                {
+                    // Enciende únicamente el GameObject de la nave seleccionada
+                    landerRenderers[i].gameObject.SetActive(i == currentIndex);
+                }
+            }
         }
     }
 }
