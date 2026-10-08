@@ -4,12 +4,22 @@ using UnityEngine.Rendering;
 
 namespace LunarLander
 {
+    /// <summary>Diseños de nave disponibles.</summary>
+    public enum LanderDesign
+    {
+        Classic = 0,
+        Modern = 1,
+        Future = 2,
+    }
+
     [DisallowMultipleComponent]
     [RequireComponent(typeof(LineRenderer))]
-    public sealed class VectorLanderRenderer : MonoBehaviour
+    public sealed partial class VectorLanderRenderer : MonoBehaviour
     {
+        public const string SelectionKey = "LunarLander.Design";
+
         // ------------------------------------------------------------------
-        // Geometría
+        // Geometría común
         // ------------------------------------------------------------------
 
         private const float EngineBottomY = -0.38f;
@@ -18,28 +28,11 @@ namespace LunarLander
         private const float InnerFlameLengthRatio = 0.5f;
         private const int FlamePointCount = 5;
 
-        private const int LegStrokeCount = 3;
-        private static readonly Vector3 LegAnchor = new Vector3(0.46f, 0.18f, 0f);
-
-        private static readonly Vector3[] ShipOutline =
-        {
-            new Vector3(-0.20f,  0.66f, 0f),
-            new Vector3( 0.20f,  0.66f, 0f),
-            new Vector3( 0.34f,  0.50f, 0f),
-            new Vector3( 0.34f,  0.30f, 0f),
-            new Vector3( 0.46f,  0.30f, 0f),
-            new Vector3( 0.46f, -0.05f, 0f),
-            new Vector3( 0.36f, -0.20f, 0f),
-            new Vector3( 0.14f, -0.20f, 0f),
-            new Vector3( 0.19f, EngineBottomY, 0f),
-            new Vector3(-0.19f, EngineBottomY, 0f),
-            new Vector3(-0.14f, -0.20f, 0f),
-            new Vector3(-0.36f, -0.20f, 0f),
-            new Vector3(-0.46f, -0.05f, 0f),
-            new Vector3(-0.46f,  0.30f, 0f),
-            new Vector3(-0.34f,  0.30f, 0f),
-            new Vector3(-0.34f,  0.50f, 0f),
-        };
+        // Roles de color de cada trazo.
+        private const int RoleHull = 0;     // lineColor
+        private const int RoleAccent = 1;   // accentColor
+        private const int RoleLeg = 2;      // legColor (se desprende al romperse una pata)
+        private const int RoleLight = 3;    // cockpitColor
 
         public readonly struct Stroke
         {
@@ -53,70 +46,56 @@ namespace LunarLander
             }
         }
 
-        private static readonly Stroke[] CenterStrokes =
+        /// <summary>
+        /// Datos de un diseño. Todos respetan la misma envolvente (casco, patas a y=-0.56,
+        /// depósitos, luces RCS y pods RCS con el lazo en y=0.48) para no tocar la física
+        /// ni los submódulos de depósitos / indicador de inclinación.
+        /// </summary>
+        private sealed class LanderGeometry
         {
-            new Stroke(true,
-                new Vector3(-0.13f, 0.56f, 0f),
-                new Vector3( 0.13f, 0.56f, 0f),
-                new Vector3( 0.09f, 0.41f, 0f),
-                new Vector3(-0.09f, 0.41f, 0f)),
+            public readonly Vector3[] Outline;
+            public readonly Stroke[] Center;
+            public readonly int[] CenterRoles;
+            public readonly Stroke[] Mirrored;
+            public readonly int[] MirroredRoles;
+            public readonly Vector3 LegAnchor;
+            public readonly float CockpitY;
+            public readonly float CockpitHalfWidth;
+            public readonly float CockpitThickness;
 
-            new Stroke(false,
-                new Vector3(-0.34f, 0.30f, 0f),
-                new Vector3( 0.34f, 0.30f, 0f)),
+            public LanderGeometry(Vector3[] outline, Stroke[] center, int[] centerRoles,
+                                  Stroke[] mirrored, int[] mirroredRoles, Vector3 legAnchor,
+                                  float cockpitY, float cockpitHalfWidth, float cockpitThickness)
+            {
+                Outline = outline;
+                Center = center;
+                CenterRoles = centerRoles;
+                Mirrored = mirrored;
+                MirroredRoles = mirroredRoles;
+                LegAnchor = legAnchor;
+                CockpitY = cockpitY;
+                CockpitHalfWidth = cockpitHalfWidth;
+                CockpitThickness = cockpitThickness;
+            }
+        }
 
-            new Stroke(false,
-                new Vector3(-0.46f, 0.10f, 0f),
-                new Vector3( 0.46f, 0.10f, 0f)),
-
-            new Stroke(true,
-                new Vector3(-0.12f, 0.24f, 0f),
-                new Vector3( 0.12f, 0.24f, 0f),
-                new Vector3( 0.12f, 0.14f, 0f),
-                new Vector3(-0.12f, 0.14f, 0f)),
-
-            new Stroke(false,
-                new Vector3(-0.155f, -0.29f, 0f),
-                new Vector3( 0.155f, -0.29f, 0f)),
-
-            new Stroke(false,
-                new Vector3(0.08f, 0.66f, 0f),
-                new Vector3(0.14f, 0.86f, 0f)),
-            new Stroke(false,
-                new Vector3(0.07f, 0.82f, 0f),
-                new Vector3(0.14f, 0.78f, 0f),
-                new Vector3(0.21f, 0.82f, 0f)),
-        };
-
-        private static readonly Stroke[] MirroredStrokes =
+        private static LanderGeometry GetGeometry(LanderDesign d)
         {
-            new Stroke(false,
-                new Vector3(0.46f,  0.18f, 0f),
-                new Vector3(0.85f, -0.56f, 0f)),
-
-            new Stroke(false,
-                new Vector3(0.46f, -0.05f, 0f),
-                new Vector3(0.68f, -0.22f, 0f),
-                new Vector3(0.85f, -0.56f, 0f)),
-
-            new Stroke(false,
-                new Vector3(0.70f, -0.56f, 0f),
-                new Vector3(1.00f, -0.56f, 0f)),
-
-            // Propulsores RCS ampliados
-            new Stroke(true,
-                new Vector3(0.34f, 0.48f, 0f),
-                new Vector3(0.46f, 0.48f, 0f),
-                new Vector3(0.46f, 0.36f, 0f),
-                new Vector3(0.34f, 0.36f, 0f)),
-
-            new Stroke(false,
-                new Vector3(0.28f, 0.30f, 0f),
-                new Vector3(0.28f, 0.10f, 0f)),
-        };
+            switch (d)
+            {
+                case LanderDesign.Modern: return ModernGeometry;
+                case LanderDesign.Future: return FutureGeometry;
+                case LanderDesign.Classic:
+                default: return ClassicGeometry;
+            }
+        }
 
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int ColorId = Shader.PropertyToID("_Color");
+
+        // Capas de resplandor: multiplicador de ancho y alfa (de fuera hacia dentro).
+        private static readonly float[] GlowWidthMul = { 3.4f, 1.9f };
+        private static readonly float[] GlowAlpha = { 0.10f, 0.28f };
 
         private static PhysicsMaterial2D debrisPhysics;
         private static PhysicsMaterial2D DebrisPhysics
@@ -129,6 +108,13 @@ namespace LunarLander
             }
         }
 
+        private sealed class GlowSet
+        {
+            public LineRenderer Source;
+            public LineRenderer[] Layers;
+            public float BaseWidth;
+        }
+
         // ------------------------------------------------------------------
         // Configuración (Inspector)
         // ------------------------------------------------------------------
@@ -138,17 +124,40 @@ namespace LunarLander
         [SerializeField] private LanderTiltRcsRenderer tiltRenderer;
         [SerializeField] private LanderFuelTankRenderer fuelRenderer;
 
+        [Header("Diseño de la nave")]
+        [SerializeField] private LanderDesign design = LanderDesign.Classic;
+        [Tooltip("Si está activo, al iniciar se usa el diseño guardado por el jugador (PlayerPrefs) en lugar del del Inspector.")]
+        [SerializeField] private bool useSavedSelection = true;
+
         [Header("Aspecto de la línea")]
         [SerializeField, Min(0.001f)] private float lineWidth = 0.05f;
         [SerializeField, Range(0.2f, 1f)] private float detailWidthScale = 0.6f;
-        [SerializeField] private Color lineColor = Color.white;
+        [SerializeField] private Color lineColor = new Color(0.25f, 0.95f, 1f);
         [SerializeField] private Material lineMaterial;
         [SerializeField] private int sortingOrder = 10;
         [SerializeField, Range(0, 8)] private int cornerVertices = 2;
         [SerializeField, Range(0, 8)] private int capVertices = 2;
 
+        [Header("Paleta neón")]
+        [Tooltip("Detalles secundarios (paneles, antena, tobera).")]
+        [SerializeField] private Color accentColor = new Color(1f, 0.30f, 0.85f);
+        [Tooltip("Patas del módulo.")]
+        [SerializeField] private Color legColor = new Color(0.80f, 0.50f, 1f);
+        [Tooltip("Luz de la cabina y detalles luminosos.")]
+        [SerializeField] private Color cockpitColor = new Color(0.55f, 1f, 1f);
+
+        [Header("Resplandor (glow)")]
+        [SerializeField] private bool glowEnabled = true;
+        [SerializeField, Range(0f, 2f)] private float glowIntensity = 1f;
+        [SerializeField, Range(0.3f, 2f)] private float glowSpread = 1f;
+        [SerializeField, Range(0f, 0.4f)] private float glowPulseAmount = 0.12f;
+        [SerializeField, Min(0f)] private float glowPulseSpeed = 2.2f;
+        [Tooltip("Material con transparencia para el resplandor. Si está vacío se usa Sprites/Default.")]
+        [SerializeField] private Material glowMaterial;
+
         [Header("Llama del propulsor")]
-        [SerializeField] private Color flameColor = Color.white;
+        [SerializeField] private Color flameColor = new Color(1f, 0.50f, 0.18f);
+        [SerializeField] private Color flameCoreColor = new Color(1f, 0.95f, 0.65f);
         [SerializeField, Min(0.05f)] private float flameMinLength = 0.30f;
         [SerializeField, Min(0.05f)] private float flameMaxLength = 0.60f;
         [SerializeField, Min(0.01f)] private float flameFlickerInterval = 0.05f;
@@ -167,12 +176,21 @@ namespace LunarLander
         private LineRenderer lineRenderer;
         private LineRenderer flameRenderer;
         private LineRenderer flameCoreRenderer;
+        private LineRenderer cockpitRenderer;
+
+        private LanderGeometry geometry;
+        private LanderDesign builtDesign;
 
         private readonly List<LineRenderer> detailRenderers = new List<LineRenderer>();
         private readonly List<Stroke> detailStrokes = new List<Stroke>();
         private readonly List<int> detailSides = new List<int>();
         private readonly List<bool> detailIsLeg = new List<bool>();
+        private readonly List<int> detailRoles = new List<int>();
         private readonly List<GameObject> spawnedDebris = new List<GameObject>();
+
+        private readonly Dictionary<LineRenderer, GlowSet> glowMap = new Dictionary<LineRenderer, GlowSet>();
+        private readonly List<GlowSet> glowList = new List<GlowSet>();
+        private Vector3[] posBuffer = new Vector3[64];
 
         private int rightTiltIndex = -1;
         private int leftTiltIndex = -1;
@@ -183,7 +201,9 @@ namespace LunarLander
         private int debrisLayer = -1;
 
         private Material activeMaterial;
+        private Material activeGlowMaterial;
         private Material runtimeMaterial;
+        private Material runtimeGlowMaterial;
         private MaterialPropertyBlock propertyBlock;
         private Vector3[] flamePoints;
         private Vector3[] flameCorePoints;
@@ -196,6 +216,87 @@ namespace LunarLander
         public Color LineColor => lineColor;
         public int SortingOrder => sortingOrder;
         public bool IsFlameActive => flameActive;
+        public LanderDesign Design => design;
+
+        // ------------------------------------------------------------------
+        // Selección de diseño
+        // ------------------------------------------------------------------
+
+        /// <summary>Devuelve el diseño guardado por el jugador, o el valor por defecto.</summary>
+        public static LanderDesign LoadSavedDesign(LanderDesign fallback)
+        {
+            return (LanderDesign)PlayerPrefs.GetInt(SelectionKey, (int)fallback);
+        }
+
+        public static void SaveDesign(LanderDesign value)
+        {
+            PlayerPrefs.SetInt(SelectionKey, (int)value);
+            PlayerPrefs.Save();
+        }
+
+        /// <summary>Cambia el diseño de la nave en caliente y, opcionalmente, lo guarda.</summary>
+        public void SetDesign(LanderDesign value, bool save = true)
+        {
+            design = value;
+            if (save) SaveDesign(value);
+
+            if (lineRenderer != null && flameRenderer != null && builtDesign != design)
+                RebuildDesign();
+        }
+
+        private void RebuildDesign()
+        {
+            geometry = GetGeometry(design);
+            builtDesign = design;
+
+            ClearShipDetails();
+            ConfigureLine(lineRenderer, geometry.Outline, true, lineColor, lineWidth);
+            BuildDetails();
+            BuildCockpit();
+
+            if (shipHidden)
+            {
+                lineRenderer.enabled = false;
+                for (int i = 0; i < detailRenderers.Count; i++) detailRenderers[i].enabled = false;
+                if (cockpitRenderer != null) cockpitRenderer.enabled = false;
+            }
+        }
+
+        private void ClearShipDetails()
+        {
+            for (int i = 0; i < detailRenderers.Count; i++)
+            {
+                LineRenderer lr = detailRenderers[i];
+                if (lr == null) continue;
+                RemoveGlow(lr);
+                Destroy(lr.gameObject);
+            }
+            detailRenderers.Clear();
+
+            if (cockpitRenderer != null)
+            {
+                RemoveGlow(cockpitRenderer);
+                Destroy(cockpitRenderer.gameObject);
+                cockpitRenderer = null;
+            }
+        }
+
+        private void RemoveGlow(LineRenderer lr)
+        {
+            glowMap.Remove(lr);
+            glowList.RemoveAll(s => s.Source == lr);
+        }
+
+        private Color RoleColor(int role)
+        {
+            switch (role)
+            {
+                case RoleAccent: return accentColor;
+                case RoleLeg: return legColor;
+                case RoleLight: return cockpitColor;
+                default: return lineColor;
+            }
+        }
 
         // ------------------------------------------------------------------
         // Ciclo de vida
@@ -208,6 +309,11 @@ namespace LunarLander
             flamePoints = new Vector3[FlamePointCount];
             flameCorePoints = new Vector3[FlamePointCount];
             activeMaterial = ResolveMaterial();
+            activeGlowMaterial = ResolveGlowMaterial();
+
+            if (useSavedSelection) design = LoadSavedDesign(design);
+            geometry = GetGeometry(design);
+            builtDesign = design;
 
             if (lander == null) lander = GetComponentInParent<LanderController>();
             if (lander != null) landerBody = lander.GetComponent<Rigidbody2D>();
@@ -219,9 +325,10 @@ namespace LunarLander
             if (!string.IsNullOrEmpty(debrisLayerName))
                 debrisLayer = LayerMask.NameToLayer(debrisLayerName);
 
-            ConfigureLine(lineRenderer, ShipOutline, true, lineColor, lineWidth);
+            ConfigureLine(lineRenderer, geometry.Outline, true, lineColor, lineWidth);
 
             BuildDetails();
+            BuildCockpit();
             BuildFlame();
 
             tiltRenderer.Initialize(this, lander);
@@ -264,6 +371,8 @@ namespace LunarLander
 
         private void Update()
         {
+            UpdateCockpitPulse();
+
             if (!flameActive) return;
 
             flickerTimer -= Time.deltaTime;
@@ -274,15 +383,25 @@ namespace LunarLander
             }
         }
 
+        private void LateUpdate()
+        {
+            SyncGlow();
+        }
+
         private void OnDestroy()
         {
             if (runtimeMaterial != null) Destroy(runtimeMaterial);
+            if (runtimeGlowMaterial != null) Destroy(runtimeGlowMaterial);
         }
 
         private void OnValidate()
         {
             flameMaxLength = Mathf.Max(flameMinLength, flameMaxLength);
-            if (Application.isPlaying && lineRenderer != null && flameRenderer != null) RefreshStyle();
+            if (Application.isPlaying && lineRenderer != null && flameRenderer != null)
+            {
+                if (design != builtDesign) RebuildDesign();
+                else RefreshStyle();
+            }
         }
 
         // ------------------------------------------------------------------
@@ -337,6 +456,7 @@ namespace LunarLander
             lr.positionCount = points.Length;
             lr.SetPositions(points);
 
+            ConfigureGlow(lr, points, loop, width);
             ApplyColor(lr, color);
         }
 
@@ -349,6 +469,141 @@ namespace LunarLander
             propertyBlock.SetColor(BaseColorId, color);
             propertyBlock.SetColor(ColorId, color);
             lr.SetPropertyBlock(propertyBlock);
+
+            if (glowMap.TryGetValue(lr, out GlowSet set))
+            {
+                for (int k = 0; k < set.Layers.Length; k++)
+                {
+                    Color g = color;
+                    g.a = Mathf.Clamp01(color.a * GlowAlpha[k] * glowIntensity);
+
+                    LineRenderer layer = set.Layers[k];
+                    layer.GetPropertyBlock(propertyBlock);
+                    propertyBlock.SetColor(BaseColorId, g);
+                    propertyBlock.SetColor(ColorId, g);
+                    layer.SetPropertyBlock(propertyBlock);
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Resplandor
+        // ------------------------------------------------------------------
+
+        private void ConfigureGlow(LineRenderer lr, Vector3[] points, bool loop, float width)
+        {
+            // Solo las líneas de la nave (los fragmentos sueltos no llevan glow).
+            if (!glowEnabled || (lr.transform.parent != transform && lr != lineRenderer)) return;
+
+            if (!glowMap.TryGetValue(lr, out GlowSet set))
+            {
+                set = new GlowSet { Source = lr, Layers = new LineRenderer[GlowWidthMul.Length] };
+                for (int k = 0; k < set.Layers.Length; k++)
+                {
+                    var go = new GameObject("Glow_" + k);
+                    go.transform.SetParent(lr.transform, false);
+                    set.Layers[k] = go.AddComponent<LineRenderer>();
+                }
+                glowMap[lr] = set;
+                glowList.Add(set);
+            }
+
+            set.BaseWidth = width;
+
+            for (int k = 0; k < set.Layers.Length; k++)
+            {
+                LineRenderer g = set.Layers[k];
+                g.useWorldSpace = false;
+                g.alignment = LineAlignment.TransformZ;
+                g.textureMode = LineTextureMode.Stretch;
+                g.loop = loop;
+                g.numCornerVertices = cornerVertices + 2;
+                g.numCapVertices = capVertices + 2;
+                float w = width * GlowWidthMul[k] * glowSpread;
+                g.startWidth = w;
+                g.endWidth = w;
+                g.sortingOrder = sortingOrder - 1 - k;
+                g.sharedMaterial = activeGlowMaterial;
+
+                g.shadowCastingMode = ShadowCastingMode.Off;
+                g.receiveShadows = false;
+                g.lightProbeUsage = LightProbeUsage.Off;
+                g.reflectionProbeUsage = ReflectionProbeUsage.Off;
+                g.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
+
+                g.positionCount = points.Length;
+                g.SetPositions(points);
+            }
+        }
+
+        // Mantiene el glow sincronizado con la línea original (posiciones, visibilidad, pulso).
+        private void SyncGlow()
+        {
+            float pulse = 1f + glowPulseAmount * Mathf.Sin(Time.time * glowPulseSpeed);
+
+            for (int i = 0; i < glowList.Count; i++)
+            {
+                GlowSet set = glowList[i];
+                LineRenderer src = set.Source;
+                if (src == null) continue;
+
+                bool visible = glowEnabled && src.enabled && src.positionCount > 0;
+                int count = src.positionCount;
+
+                if (visible)
+                {
+                    if (posBuffer.Length < count) posBuffer = new Vector3[count * 2];
+                    src.GetPositions(posBuffer);
+                }
+
+                for (int k = 0; k < set.Layers.Length; k++)
+                {
+                    LineRenderer g = set.Layers[k];
+                    if (g == null) continue;
+
+                    g.enabled = visible;
+                    if (!visible) continue;
+
+                    if (g.positionCount != count) g.positionCount = count;
+                    g.SetPositions(posBuffer);
+                    g.loop = src.loop;
+
+                    float w = set.BaseWidth * GlowWidthMul[k] * glowSpread * pulse;
+                    g.startWidth = w;
+                    g.endWidth = w;
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Cabina
+        // ------------------------------------------------------------------
+
+        private Vector3[] CockpitPoints()
+        {
+            return new[]
+            {
+                new Vector3(-geometry.CockpitHalfWidth, geometry.CockpitY, 0f),
+                new Vector3( geometry.CockpitHalfWidth, geometry.CockpitY, 0f),
+            };
+        }
+
+        private void BuildCockpit()
+        {
+            cockpitRenderer = CreateChildLine("CockpitLight");
+            ConfigureLine(cockpitRenderer, CockpitPoints(), false, cockpitColor, geometry.CockpitThickness);
+            cockpitRenderer.sortingOrder = sortingOrder - 1;
+            cockpitRenderer.enabled = !shipHidden;
+        }
+
+        private void UpdateCockpitPulse()
+        {
+            if (cockpitRenderer == null || shipHidden) return;
+
+            float t = 0.65f + 0.35f * Mathf.Sin(Time.time * 3.1f);
+            Color c = cockpitColor;
+            c.a = Mathf.Lerp(0.25f, 0.85f, t);
+            ApplyColor(cockpitRenderer, c);
         }
 
         // ------------------------------------------------------------------
@@ -385,6 +640,7 @@ namespace LunarLander
             {
                 detailRenderers[i].enabled = true;
             }
+            if (cockpitRenderer != null) cockpitRenderer.enabled = true;
 
             if (tiltRenderer != null) tiltRenderer.ResetState();
             if (fuelRenderer != null) fuelRenderer.ResetState();
@@ -399,7 +655,8 @@ namespace LunarLander
             float impactSpeed = new Vector2(result.ImpactHorizontalSpeed, result.ImpactVerticalSpeed).magnitude;
             float speed = Mathf.Clamp(impactSpeed, 1f, 6f) * 0.5f;
 
-            Vector2 anchor = transform.TransformPoint(new Vector3(LegAnchor.x * side, LegAnchor.y, 0f));
+            Vector3 legAnchor = geometry.LegAnchor;
+            Vector2 anchor = transform.TransformPoint(new Vector3(legAnchor.x * side, legAnchor.y, 0f));
 
             for (int i = 0; i < detailRenderers.Count; i++)
             {
@@ -407,7 +664,8 @@ namespace LunarLander
 
                 detailRenderers[i].enabled = false;
                 SpawnStrokeFragments(detailStrokes[i].Points, detailStrokes[i].Loop,
-                                     lineWidth * detailWidthScale, lineColor, anchor, baseVelocity, speed, 1f);
+                                     lineWidth * detailWidthScale, RoleColor(detailRoles[i]),
+                                     anchor, baseVelocity, speed, 1f);
             }
             SpawnSparks(8, anchor, speed + 1.5f, baseVelocity);
         }
@@ -426,6 +684,7 @@ namespace LunarLander
             {
                 detailRenderers[i].enabled = false;
             }
+            if (cockpitRenderer != null) cockpitRenderer.enabled = false;
 
             if (tiltRenderer != null) tiltRenderer.SetHidden(true);
             if (fuelRenderer != null)
@@ -434,7 +693,7 @@ namespace LunarLander
                 fuelRenderer.SpawnDebris(center, baseVelocity, fragmentSpeed);
             }
 
-            SpawnStrokeFragments(ShipOutline, true, lineWidth, lineColor, center, baseVelocity, fragmentSpeed, 1f);
+            SpawnStrokeFragments(geometry.Outline, true, lineWidth, lineColor, center, baseVelocity, fragmentSpeed, 1f);
 
             Color leftColor = lineColor;
             Color rightColor = lineColor;
@@ -442,7 +701,7 @@ namespace LunarLander
 
             for (int i = 0; i < detailStrokes.Count; i++)
             {
-                Color strokeColor = lineColor;
+                Color strokeColor = RoleColor(detailRoles[i]);
                 if (i == rightTiltIndex) strokeColor = rightColor;
                 else if (i == leftTiltIndex) strokeColor = leftColor;
 
@@ -507,7 +766,8 @@ namespace LunarLander
                 Vector3 b = a + (Vector3)(dir * length);
 
                 Vector2 velocity = baseVelocity * 0.3f + dir * Random.Range(speed * 0.6f, speed);
-                SpawnFragment(a, b, flameColor, lineWidth * 0.7f, velocity, Random.Range(-360f, 360f),
+                Color spark = Random.value < 0.5f ? flameColor : flameCoreColor;
+                SpawnFragment(a, b, spark, lineWidth * 0.7f, velocity, Random.Range(-360f, 360f),
                               false, 0f, 1.5f, Random.Range(0.4f, 0.9f));
             }
         }
@@ -564,32 +824,37 @@ namespace LunarLander
             detailStrokes.Clear();
             detailSides.Clear();
             detailIsLeg.Clear();
+            detailRoles.Clear();
 
-            foreach (Stroke stroke in CenterStrokes)
+            for (int c = 0; c < geometry.Center.Length; c++)
             {
-                detailStrokes.Add(stroke);
+                detailStrokes.Add(geometry.Center[c]);
                 detailSides.Add(0);
                 detailIsLeg.Add(false);
+                detailRoles.Add(geometry.CenterRoles[c]);
             }
 
-            for (int j = 0; j < MirroredStrokes.Length; j++)
+            for (int j = 0; j < geometry.Mirrored.Length; j++)
             {
-                bool isLeg = j < LegStrokeCount;
+                int role = geometry.MirroredRoles[j];
+                bool isLeg = role == RoleLeg;
 
-                detailStrokes.Add(MirroredStrokes[j]);
+                detailStrokes.Add(geometry.Mirrored[j]);
                 detailSides.Add(1);
                 detailIsLeg.Add(isLeg);
+                detailRoles.Add(role);
 
-                detailStrokes.Add(Mirror(MirroredStrokes[j]));
+                detailStrokes.Add(Mirror(geometry.Mirrored[j]));
                 detailSides.Add(-1);
                 detailIsLeg.Add(isLeg);
+                detailRoles.Add(role);
             }
 
             for (int i = 0; i < detailStrokes.Count; i++)
             {
                 LineRenderer lr = CreateChildLine("Detail_" + i);
                 ConfigureLine(lr, detailStrokes[i].Points, detailStrokes[i].Loop,
-                              lineColor, lineWidth * detailWidthScale);
+                              RoleColor(detailRoles[i]), lineWidth * detailWidthScale);
                 detailRenderers.Add(lr);
             }
 
@@ -624,7 +889,11 @@ namespace LunarLander
 
             FillFlamePoints(flameMaxLength);
             ConfigureLine(flameRenderer, flamePoints, false, flameColor, lineWidth);
-            ConfigureLine(flameCoreRenderer, flameCorePoints, false, flameColor, lineWidth * detailWidthScale);
+            ConfigureLine(flameCoreRenderer, flameCorePoints, false, flameCoreColor, lineWidth * detailWidthScale);
+
+            // La llama brilla por encima del casco.
+            flameRenderer.sortingOrder = sortingOrder + 1;
+            flameCoreRenderer.sortingOrder = sortingOrder + 2;
 
             flameRenderer.enabled = false;
             flameCoreRenderer.enabled = false;
@@ -658,17 +927,27 @@ namespace LunarLander
 
         private void RefreshStyle()
         {
-            ConfigureLine(lineRenderer, ShipOutline, true, lineColor, lineWidth);
+            activeGlowMaterial = ResolveGlowMaterial();
+
+            ConfigureLine(lineRenderer, geometry.Outline, true, lineColor, lineWidth);
 
             for (int i = 0; i < detailRenderers.Count; i++)
             {
                 ConfigureLine(detailRenderers[i], detailStrokes[i].Points, detailStrokes[i].Loop,
-                              lineColor, lineWidth * detailWidthScale);
+                              RoleColor(detailRoles[i]), lineWidth * detailWidthScale);
+            }
+
+            if (cockpitRenderer != null)
+            {
+                ConfigureLine(cockpitRenderer, CockpitPoints(), false, cockpitColor, geometry.CockpitThickness);
+                cockpitRenderer.sortingOrder = sortingOrder - 1;
             }
 
             FillFlamePoints(flameMaxLength);
             ConfigureLine(flameRenderer, flamePoints, false, flameColor, lineWidth);
-            ConfigureLine(flameCoreRenderer, flameCorePoints, false, flameColor, lineWidth * detailWidthScale);
+            ConfigureLine(flameCoreRenderer, flameCorePoints, false, flameCoreColor, lineWidth * detailWidthScale);
+            flameRenderer.sortingOrder = sortingOrder + 1;
+            flameCoreRenderer.sortingOrder = sortingOrder + 2;
 
             if (fuelRenderer != null) fuelRenderer.BuildTanks();
             if (tiltRenderer != null)
@@ -697,6 +976,22 @@ namespace LunarLander
 
             runtimeMaterial = new Material(shader) { name = "VectorLine (runtime)" };
             return runtimeMaterial;
+        }
+
+        private Material ResolveGlowMaterial()
+        {
+            if (glowMaterial != null) return glowMaterial;
+            if (runtimeGlowMaterial != null) return runtimeGlowMaterial;
+
+            // Sprites/Default admite transparencia, necesaria para el halo.
+            Shader shader = Shader.Find("Sprites/Default");
+            if (shader == null)
+            {
+                return activeMaterial;
+            }
+
+            runtimeGlowMaterial = new Material(shader) { name = "VectorLineGlow (runtime)" };
+            return runtimeGlowMaterial;
         }
     }
 }

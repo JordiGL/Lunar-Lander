@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace LunarLander
@@ -13,8 +14,8 @@ namespace LunarLander
     {
         [Header("Referencias del Sistema")]
         [SerializeField] private LanderController lander;
-        [SerializeField] private StandardHUD hud; // Actualizado a StandardHUD
-        [SerializeField] private VectorTerrain terrain;
+        [SerializeField] private StandardHUD hud;
+        [SerializeField] private TerrainManager terrainManager;
 
         [Header("Configuración de Puntuación")]
         [Tooltip("Puntos base por un aterrizaje exitoso.")]
@@ -28,13 +29,15 @@ namespace LunarLander
         [SerializeField, Min(0.5f)] private float resetDelay = 3.0f;
 
         private Coroutine resetCoroutine;
+        private VectorTerrain currentTerrain;
+        private HashSet<int> claimedPads = new HashSet<int>();
 
         private void Awake()
         {
             // Búsqueda de referencias por si no se asignaron en el Inspector
             if (lander == null) lander = FindObjectOfType<LanderController>();
             if (hud == null) hud = FindObjectOfType<StandardHUD>(); // Búsqueda de StandardHUD
-            if (terrain == null) terrain = FindObjectOfType<VectorTerrain>();
+            if (terrainManager == null) terrainManager = FindObjectOfType<TerrainManager>();
         }
 
         private void OnEnable()
@@ -71,38 +74,50 @@ namespace LunarLander
                 resetCoroutine = null;
             }
 
-            if (terrain != null)
+            if (terrainManager != null)
             {
-                terrain.GenerateTerrain();
+                // Delega la responsabilidad de elegir y generar al Manager
+                currentTerrain = terrainManager.SetupTerrain();
             }
 
-            if (hud != null)
-            {
-                hud.ResetTimer();
-            }
-
-            if (lander != null)
-            {
-                lander.ResetLander(spawnPosition);
-            }
+            if (hud != null) hud.ResetTimer();
+            if (lander != null) lander.ResetLander(spawnPosition);
+            claimedPads.Clear();
         }
 
         private void HandleLanded(LandingResult result)
         {
-            // 1. Obtener multiplicador de la plataforma donde tocó pie la nave
-            int multiplier = GetLandingPadMultiplier(lander.transform.position);
+            int padIndex = GetLandingPadIndex(lander.transform.position);
 
-            // 2. Calcular puntos (Puntos base x Multiplicador)
-            int earnedPoints = baseLandingPoints * multiplier;
-
-            // 3. Sumar la puntuación al HUD
-            if (hud != null)
+            // Solo premiamos si es una plataforma válida y no ha sido reclamada
+            if (padIndex >= 0 && !claimedPads.Contains(padIndex))
             {
-                hud.AddScore(earnedPoints);
-            }
+                claimedPads.Add(padIndex);
 
-            // 4. Programar el reinicio tras la espera
-            ScheduleReset();
+                int multiplier = currentTerrain.LandingPads[padIndex].multiplier;
+                int earnedPoints = baseLandingPoints * multiplier;
+
+                if (hud != null) hud.AddScore(earnedPoints);
+                if (lander != null) lander.AddFuel(250f);
+            }
+        }
+
+        // Sustituye el antiguo GetLandingPadMultiplier por este que devuelve el Índice:
+        private int GetLandingPadIndex(Vector2 landerPosition)
+        {
+            if (currentTerrain == null) return -1;
+
+            float tolerance = 0.5f;
+            for (int i = 0; i < currentTerrain.LandingPads.Count; i++)
+            {
+                var pad = currentTerrain.LandingPads[i];
+                float minX = Mathf.Min(pad.startPoint.x, pad.endPoint.x) - tolerance;
+                float maxX = Mathf.Max(pad.startPoint.x, pad.endPoint.x) + tolerance;
+
+                if (landerPosition.x >= minX && landerPosition.x <= maxX)
+                    return i;
+            }
+            return -1;
         }
 
         private void HandleCrashed(LandingResult result)
@@ -113,22 +128,17 @@ namespace LunarLander
 
         private int GetLandingPadMultiplier(Vector2 landerPosition)
         {
-            if (terrain == null) return 1;
+            if (currentTerrain == null) return 1;
 
-            // Tolerancia de 0.5 unidades a cada lado para cubrir el ancho de las patas del lander
             float tolerance = 0.5f;
-
-            foreach (var pad in terrain.LandingPads)
+            foreach (var pad in currentTerrain.LandingPads) // <-- Usa currentTerrain
             {
                 float minX = Mathf.Min(pad.startPoint.x, pad.endPoint.x) - tolerance;
                 float maxX = Mathf.Max(pad.startPoint.x, pad.endPoint.x) + tolerance;
 
                 if (landerPosition.x >= minX && landerPosition.x <= maxX)
-                {
                     return pad.multiplier;
-                }
             }
-
             return 1;
         }
 
@@ -154,6 +164,11 @@ namespace LunarLander
             if (hud != null)
             {
                 hud.ResetTimer();
+            }
+
+            if (currentTerrain != null)
+            {
+                currentTerrain.ClearFlags();
             }
 
             resetCoroutine = null;

@@ -226,6 +226,7 @@ namespace LunarLander
 
         private Rigidbody2D rb;
         private float currentFuel;
+        private float timeSinceTakeoff = 10f;
 
         // La entrada se lee en Update y se consume en FixedUpdate (física estable).
         private float rotationInput;   // +1 = antihorario (izquierda), -1 = horario (derecha)
@@ -269,18 +270,39 @@ namespace LunarLander
 
         private void Update()
         {
-            if (State != LanderState.Flying)
-            {
-                rotationInput = 0f;
-                thrustInput = false;
-                return;
-            }
-
+            // Controles de vuelo compartidos
             rotationInput = 0f;
             if (Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow)) rotationInput += 1f;
             if (Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow)) rotationInput -= 1f;
 
             thrustInput = Input.GetKey(KeyCode.Space) || Input.GetKey(KeyCode.W);
+
+            if (State == LanderState.Landed)
+            {
+                if (thrustInput)
+                {
+                    rb.bodyType = RigidbodyType2D.Dynamic;
+                    State = LanderState.Flying;
+
+                    // Separamos la nave del suelo y reiniciamos el temporizador
+                    rb.position += Vector2.up * 0.1f;
+                    rb.velocity = new Vector2(0f, 1f);
+                    timeSinceTakeoff = 0f;
+
+                    EmitStatus();
+                }
+                else
+                {
+                    rotationInput = 0f;
+                    return;
+                }
+            }
+            else if (State != LanderState.Flying)
+            {
+                rotationInput = 0f;
+                thrustInput = false;
+                return;
+            }
         }
 
         private void FixedUpdate()
@@ -298,6 +320,9 @@ namespace LunarLander
                 SetThrusting(false);
                 return;
             }
+
+            // Sumar el tiempo de vuelo
+            timeSinceTakeoff += Time.fixedDeltaTime;
 
             // Rotación estilo arcade: control directo, sin inercia angular.
             rb.angularVelocity = rotationInput * rotationSpeed;
@@ -317,6 +342,9 @@ namespace LunarLander
         private void OnCollisionEnter2D(Collision2D collision)
         {
             if (State == LanderState.Landed || State == LanderState.Crashed) return;
+
+            // Ignorar colisiones durante los primeros 0.2 segundos de vuelo
+            if (timeSinceTakeoff < 0.2f) return;
 
             // relativeVelocity refleja la velocidad de aproximación antes de que el motor
             // de física resuelva el choque (rb.velocity ya estaría modificada).
