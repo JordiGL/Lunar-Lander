@@ -9,7 +9,7 @@ namespace LunarLander
     [DisallowMultipleComponent]
     public sealed class LanderRendererStarship : VectorLanderRendererBase
     {
-        public override LanderDesign Design => LanderDesign.Starship;
+        public override string DesignName => "Starship";
 
         protected override LanderGeometry GetLanderGeometry() => StarshipGeometry;
 

@@ -4,15 +4,20 @@ using UnityEngine.Rendering;
 
 namespace LunarLander
 {
-    public enum LanderDesign { Classic = 0, Modern = 1, Future = 2, Hex = 3, Starship = 4, Explorer = 5 }
-
     [DisallowMultipleComponent]
     [RequireComponent(typeof(LineRenderer))]
     public abstract class VectorLanderRendererBase : MonoBehaviour
     {
-        public const string SelectionKey = "LunarLander.Design";
+        public const string SelectionKey = "LunarLander.SelectedDesignIndex";
 
-        // Constantes protegidas para que los hijos las usen en sus geometrías
+        // Nombre descriptivo (por defecto el nombre del GameObject)
+        public virtual string DesignName => gameObject.name;
+
+        // Métodos de guardado basados en el índice de selección
+        public static int LoadSavedDesignIndex(int fallback = 0) => PlayerPrefs.GetInt(SelectionKey, fallback);
+        public static void SaveDesignIndex(int index) { PlayerPrefs.SetInt(SelectionKey, index); PlayerPrefs.Save(); }
+
+        // Constantes protegidas para que las clases derivadas las usen en sus geometrías
         protected const float EngineBottomY = -0.38f;
         protected const int RoleHull = 0;
         protected const int RoleAccent = 1;
@@ -56,8 +61,7 @@ namespace LunarLander
             }
         }
 
-        // Métodos que deben implementar los hijos (Classic, Modern, Future)
-        public abstract LanderDesign Design { get; }
+        // Cada variante concreta define su propia geometría
         protected abstract LanderGeometry GetLanderGeometry();
 
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
@@ -162,9 +166,6 @@ namespace LunarLander
         public int SortingOrder => sortingOrder;
         public bool IsFlameActive => flameActive;
 
-        public static LanderDesign LoadSavedDesign(LanderDesign fallback) => (LanderDesign)PlayerPrefs.GetInt(SelectionKey, (int)fallback);
-        public static void SaveDesign(LanderDesign value) { PlayerPrefs.SetInt(SelectionKey, (int)value); PlayerPrefs.Save(); }
-
         private Color RoleColor(int role)
         {
             switch (role)
@@ -185,7 +186,6 @@ namespace LunarLander
             activeMaterial = ResolveMaterial();
             activeGlowMaterial = ResolveGlowMaterial();
 
-            // Usamos la geometría de la clase hija
             geometry = GetLanderGeometry();
 
             if (lander == null) lander = GetComponentInParent<LanderController>();
@@ -201,8 +201,8 @@ namespace LunarLander
             BuildCockpit();
             BuildFlame();
 
-            tiltRenderer.Initialize(this, lander);
-            fuelRenderer.Initialize(this, lander);
+            if (tiltRenderer != null) tiltRenderer.Initialize(this, lander);
+            if (fuelRenderer != null) fuelRenderer.Initialize(this, lander);
         }
 
         private void OnEnable()

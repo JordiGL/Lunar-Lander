@@ -5,7 +5,7 @@ namespace LunarLander
     [DisallowMultipleComponent]
     public sealed class LanderRendererModern : VectorLanderRendererBase
     {
-        public override LanderDesign Design => LanderDesign.Modern;
+        public override string DesignName => "Modern";
 
         protected override LanderGeometry GetLanderGeometry() => ModernGeometry;
 

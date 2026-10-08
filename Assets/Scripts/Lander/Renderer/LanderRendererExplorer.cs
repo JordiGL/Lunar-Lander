@@ -11,7 +11,7 @@ namespace LunarLander
     [DisallowMultipleComponent]
     public sealed class LanderRendererExplorer : VectorLanderRendererBase
     {
-        public override LanderDesign Design => LanderDesign.Explorer;
+        public override string DesignName => "Explorer";
 
         protected override LanderGeometry GetLanderGeometry() => ExplorerGeometry;
 

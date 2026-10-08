@@ -5,7 +5,7 @@ namespace LunarLander
     [DisallowMultipleComponent]
     public sealed class LanderRendererHex : VectorLanderRendererBase
     {
-        public override LanderDesign Design => LanderDesign.Hex;
+        public override string DesignName => "Hex";
 
         protected override LanderGeometry GetLanderGeometry() => HexGeometry;
 
