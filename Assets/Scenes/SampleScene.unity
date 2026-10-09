@@ -966,8 +966,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   target: {fileID: 1472897821}
-  maxZoomSize: 50
-  minZoomSize: 8
+  maxZoomSize: 45
+  minZoomSize: 6
   zoomOutAltitude: 18
   zoomInAltitude: 2.5
   zoomCurve:
