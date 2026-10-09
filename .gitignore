@@ -25,6 +25,7 @@
 *.mdb
 *.opendb
 *.VC.db
+*.mp3
 
 # OS generated files
 .DS_Store

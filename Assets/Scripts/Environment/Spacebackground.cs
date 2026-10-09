@@ -6,7 +6,7 @@ namespace LunarLander
 {
     /// <summary>
     /// Fondo espacial 100% procedural: degradado de cielo, nebulosa, estrellas con
-    /// parallax y parpadeo, y estrellas fugaces (sin planetas).
+    /// parallax y parpadeo, estrellas fugaces y reacción al ritmo de la música.
     /// </summary>
     [DisallowMultipleComponent]
     [DefaultExecutionOrder(200)]
@@ -52,6 +52,19 @@ namespace LunarLander
         [SerializeField, Min(0.5f)] private float shootingMinInterval = 3f;
         [SerializeField, Min(0.5f)] private float shootingMaxInterval = 9f;
 
+        [Header("Audio Reactivo (Estrellas)")]
+        [SerializeField] private AudioSource musicSource;
+        [Tooltip("Si no se asigna, se analiza todo lo que oye el AudioListener.")]
+        [SerializeField, Range(1.05f, 3f)] private float beatSensitivity = 1.35f;
+        [Tooltip("Energía mínima de graves para considerar un beat (evita falsos beats en silencio).")]
+        [SerializeField, Min(0f)] private float minBeatEnergy = 0.0005f;
+        [SerializeField, Range(0.08f, 0.5f)] private float beatCooldown = 0.15f;
+        [Tooltip("Brillo de las estrellas entre beats (el beat las lleva a 1).")]
+        [SerializeField, Range(0f, 1f)] private float idleBrightness = 0.45f;
+        [SerializeField, Min(1f)] private float pulseDecay = 5f;
+        [Tooltip("Cuánto reaccionan las estrellas brillantes frente a las lejanas.")]
+        [SerializeField, Range(0f, 1f)] private float pulseStrength = 1f;
+
         // ------------------------------------------------------------------
         // Tipos internos
         // ------------------------------------------------------------------
@@ -71,6 +84,7 @@ namespace LunarLander
             public bool twinkle;
             public float twinkleSpeed;
             public float twinklePhase;
+            public bool reactsToAudio; // Indica si reacciona a los pulsos de la música
         }
 
         // ------------------------------------------------------------------
@@ -92,6 +106,12 @@ namespace LunarLander
         private bool shootActive;
         private float shootTimer, shootT, shootDur, shootSpeed, shootLen;
         private Vector2 shootStart, shootDir;
+
+        // Audio reactivo
+        private readonly float[] spectrumData = new float[1024];
+        private float audioPulse = 0f;
+        private float bassAverage = 0f;
+        private float lastBeatTime = -10f;
 
         // ------------------------------------------------------------------
         // Ciclo de vida
@@ -126,6 +146,7 @@ namespace LunarLander
         private void Update()
         {
             UpdateShooting(Time.deltaTime);
+            UpdateAudioPulse();
         }
 
         private void LateUpdate()
@@ -145,6 +166,40 @@ namespace LunarLander
 
             if (spriteMaterial != null) Destroy(spriteMaterial);
             if (root != null) Destroy(root.gameObject);
+        }
+
+        // ------------------------------------------------------------------
+        // Audio Reactivo
+        // ------------------------------------------------------------------
+
+        private void UpdateAudioPulse()
+        {
+            // Decaimiento exponencial del pulso
+            audioPulse *= Mathf.Exp(-pulseDecay * Time.deltaTime);
+
+            bool hasSource = musicSource != null;
+            if (hasSource && !musicSource.isPlaying) return;
+
+            if (hasSource) musicSource.GetSpectrumData(spectrumData, 0, FFTWindow.Blackman);
+            else AudioListener.GetSpectrumData(spectrumData, 0, FFTWindow.Blackman);
+
+            // 1024 bins => ~21 Hz por bin a 44.1 kHz. Bins 2..8 ≈ 43-190 Hz (bombo/bajo).
+            float energy = 0f;
+            for (int i = 2; i <= 8; i++) energy += spectrumData[i];
+            energy /= 7f;
+
+            // Un beat es un pico de graves respecto a la media reciente (adaptativo al volumen).
+            bool isBeat = energy > minBeatEnergy
+                          && energy > bassAverage * beatSensitivity
+                          && Time.time - lastBeatTime > beatCooldown;
+
+            if (isBeat)
+            {
+                lastBeatTime = Time.time;
+                audioPulse = 1f;
+            }
+
+            bassAverage = Mathf.Lerp(bassAverage, energy, Time.deltaTime * 4f);
         }
 
         // ------------------------------------------------------------------
@@ -307,24 +362,28 @@ namespace LunarLander
                 sortingOrderBase + 10, 0.010f, 1.1f, true);
             far.alpha = 0.9f;
             far.drift = starDrift * 0.5f;
+            far.reactsToAudio = true; // Reacciona al audio
 
             Layer mid = CreateLayer("StarsMid",
                 MakeStarTexture(StarTexSize, d(520), 0.8f, 1.1f, 0.35f, 1.8f, false),
                 sortingOrderBase + 11, 0.025f, 1.5f, true);
             mid.drift = starDrift * 0.8f;
             SetTwinkle(mid, 0.9f);
+            mid.reactsToAudio = true; // Reacciona al audio
 
             Layer b1 = CreateLayer("StarsBright1",
                 MakeStarTexture(StarTexSize, d(45), 1.1f, 1.6f, 0.6f, 1.2f, true),
                 sortingOrderBase + 12, 0.045f, 2.0f, true);
             b1.drift = starDrift;
             SetTwinkle(b1, 1.7f);
+            b1.reactsToAudio = true; // Reacciona al audio
 
             Layer b2 = CreateLayer("StarsBright2",
                 MakeStarTexture(StarTexSize, d(40), 1.1f, 1.6f, 0.6f, 1.2f, true),
                 sortingOrderBase + 13, 0.060f, 2.3f, true);
             b2.drift = starDrift * 1.2f;
             SetTwinkle(b2, 2.6f);
+            b2.reactsToAudio = true; // Reacciona al audio
         }
 
         private void SetTwinkle(Layer l, float speed)
@@ -531,17 +590,26 @@ namespace LunarLander
                 l.uv[3] = new Vector2(ox + hx, oy - hy);
                 l.mesh.uv = l.uv;
 
+                float currentAlpha = l.alpha;
+
                 if (l.twinkle)
                 {
                     float s = 0.65f * Mathf.Sin(t * l.twinkleSpeed + l.twinklePhase)
                             + 0.35f * Mathf.Sin(t * l.twinkleSpeed * 2.7f + l.twinklePhase * 1.7f);
                     s = 0.5f + 0.5f * s;
-                    float a = l.alpha * (1f - twinkleDepth + twinkleDepth * s);
-                    l.mat.color = new Color(1f, 1f, 1f, a);
+                    currentAlpha = l.alpha * (1f - twinkleDepth + twinkleDepth * s);
                 }
-                else if (!Mathf.Approximately(l.alpha, 1f))
+
+                if (l.reactsToAudio)
                 {
-                    l.mat.color = new Color(1f, 1f, 1f, l.alpha);
+                    // Brillo base atenuado; el beat lo lleva a pleno brillo.
+                    float pulse = audioPulse * pulseStrength;
+                    currentAlpha *= Mathf.Lerp(idleBrightness, 1f, pulse);
+                }
+
+                if (l.twinkle || l.reactsToAudio || !Mathf.Approximately(currentAlpha, 1f))
+                {
+                    l.mat.color = new Color(1f, 1f, 1f, Mathf.Clamp01(currentAlpha));
                 }
             }
         }
