@@ -9,7 +9,7 @@ namespace LunarLander
     /// - Las pantallas se encienden y se apagan con el clásico efecto CRT:
     ///   línea horizontal que se colapsa a un punto brillante.
     /// </summary>
-    public sealed class DystopianTVTerrain : VectorTerrain
+    public sealed class DystopianTVTerrain : TerrainBase
     {
         [Header("Geometría")]
         [SerializeField, Min(200)] private int segments = 520;

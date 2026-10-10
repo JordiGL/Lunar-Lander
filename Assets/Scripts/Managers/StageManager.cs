@@ -13,7 +13,7 @@ namespace LunarLander
         public string stageName = "Nivel";
 
         [Tooltip("El terreno vectorial de este nivel (MoonTerrain, DystopianTVTerrain, etc.)")]
-        public VectorTerrain terrain;
+        public TerrainBase terrain;
 
         [Tooltip("El fondo espacial configurado para esta pantalla")]
         public SpaceBackgroundBase background;

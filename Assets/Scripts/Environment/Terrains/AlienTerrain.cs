@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace LunarLander
 {
-    public sealed class AlienTerrain : VectorTerrain
+    public sealed class AlienTerrain : TerrainBase
     {
         [Header("Geometría Alienígena")]
         [SerializeField, Min(200)] private int segments = 520;

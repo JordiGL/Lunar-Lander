@@ -37,7 +37,7 @@ namespace LunarLander
         [SerializeField] private bool advanceStageOnLanding = false;
 
         private Coroutine resetCoroutine;
-        private VectorTerrain currentTerrain;
+        private TerrainBase currentTerrain;
         private Vector2 currentSpawnPosition;
         private readonly HashSet<int> claimedPads = new HashSet<int>();
 

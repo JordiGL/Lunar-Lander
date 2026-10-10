@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace LunarLander
 {
-    public sealed class MoonTerrain : VectorTerrain
+    public sealed class MoonTerrain : TerrainBase
     {
         [Header("Geometría Base y Ruido")]
         [SerializeField, Min(200)] private int segments = 520;

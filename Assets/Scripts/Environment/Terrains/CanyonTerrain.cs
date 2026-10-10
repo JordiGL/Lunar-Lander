@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace LunarLander
 {
-    public sealed class CanyonTerrain : VectorTerrain
+    public sealed class CanyonTerrain : TerrainBase
     {
         [Header("Geometría del Cañón")]
         [SerializeField, Min(200)] private int segments = 520;

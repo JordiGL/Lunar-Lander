@@ -23,7 +23,7 @@ namespace LunarLander
 
     [DisallowMultipleComponent]
     [RequireComponent(typeof(LineRenderer), typeof(EdgeCollider2D))]
-    public abstract class VectorTerrain : MonoBehaviour
+    public abstract class TerrainBase : MonoBehaviour
     {
         protected const string FxPrefix = "TerrainFX_";
         protected const string FlagName = FxPrefix + "Flag";

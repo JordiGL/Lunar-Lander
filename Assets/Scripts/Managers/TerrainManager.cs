@@ -7,7 +7,7 @@ namespace LunarLander
     {
         [Header("Terrenos Disponibles")]
         [Tooltip("Arrastra aquí los GameObjects que tienen tus scripts MoonTerrain, CanyonTerrain, etc.")]
-        public VectorTerrain[] terrainPrefabs = new VectorTerrain[0];
+        public TerrainBase[] terrainPrefabs = new TerrainBase[0];
 
         [Header("Selector Principal")]
         [Tooltip("Elige el índice del terreno a jugar (0 = el primero, 1 = el segundo, etc.)")]
@@ -31,7 +31,7 @@ namespace LunarLander
         /// <summary>
         /// Activa el terreno seleccionado, lo genera y desactiva el resto.
         /// </summary>
-        public VectorTerrain SetupTerrain()
+        public TerrainBase SetupTerrain()
         {
             if (terrainPrefabs == null || terrainPrefabs.Length == 0)
             {
@@ -41,7 +41,7 @@ namespace LunarLander
 
             // Aseguramos que el índice es válido por si se modificó por código
             int safeIndex = Mathf.Clamp(selectedTerrainIndex, 0, terrainPrefabs.Length - 1);
-            VectorTerrain activeTerrain = null;
+            TerrainBase activeTerrain = null;
 
             for (int i = 0; i < terrainPrefabs.Length; i++)
             {

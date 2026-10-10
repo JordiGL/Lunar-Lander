@@ -372,7 +372,7 @@ namespace LunarLander
             if (terrainCache.TryGetValue(col, out bool isTerrain)) return isTerrain;
 
             if (terrainCache.Count > 256) terrainCache.Clear();   // evita acumular colliders de restos ya destruidos
-            isTerrain = col.GetComponentInParent<VectorTerrain>() != null;
+            isTerrain = col.GetComponentInParent<TerrainBase>() != null;
             terrainCache[col] = isTerrain;
             return isTerrain;
         }
