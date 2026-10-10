@@ -182,6 +182,18 @@ namespace LunarLander
             return margin;
         }
 
+        /// <summary>
+        /// True si la coordenada x cae dentro de la zona jugable (excluye el buffer exterior).
+        /// startX es la x del primer punto (-totalWidth/2). Sirve para normalizar alturas solo con
+        /// la zona jugable, de modo que el buffer exterior no condicione la escala del relieve.
+        /// </summary>
+        protected bool InPlayableZone(float x, float startX)
+        {
+            float playableHalf = -startX - outerBufferWidth;
+            if (playableHalf <= 0f) return true;
+            return Mathf.Abs(x) <= playableHalf + 0.0001f;
+        }
+
         /// <summary>Puntos de la línea del terreno con una prolongación plana a cada lado (sin final visible).</summary>
         protected Vector3[] BuildExtendedPoints3D()
         {

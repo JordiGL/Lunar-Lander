@@ -126,15 +126,21 @@ namespace LunarLander
                 float microOffset = (Mathf.Lerp(microNoise1 - 0.5f, jagged - 0.5f, fractalJaggedness) + (microNoise2 - 0.5f) * 0.5f) * microDetail * 0.35f;
 
                 v[i] = macro + midRoll + microOffset;
-                lo = Mathf.Min(lo, v[i]);
-                hi = Mathf.Max(hi, v[i]);
+                // Solo la zona jugable fija la escala; el buffer exterior puede salirse y se recorta luego.
+                if (InPlayableZone(x, startX))
+                {
+                    lo = Mathf.Min(lo, v[i]);
+                    hi = Mathf.Max(hi, v[i]);
+                }
             }
 
             float range = Mathf.Max(0.0001f, hi - lo);
             for (int i = 0; i < pointCount; i++)
             {
                 float norm = (v[i] - lo) / range;
-                v[i] = Mathf.Lerp(minHeight, maxHeight, Mathf.Pow(norm, peakSharpness));
+                // Pow con signo: el buffer puede quedar fuera de 0..1 y Pow de un negativo daría NaN.
+                float shaped = Mathf.Sign(norm) * Mathf.Pow(Mathf.Abs(norm), peakSharpness);
+                v[i] = Mathf.LerpUnclamped(minHeight, maxHeight, shaped);
             }
             return v;
         }

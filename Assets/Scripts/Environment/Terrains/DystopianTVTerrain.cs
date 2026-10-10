@@ -251,7 +251,9 @@ namespace LunarLander
             n = Mathf.Pow(n, 1.2f);
             float h = Mathf.Lerp(minHeight + 1f, maxHeight, n);
 
-            float fadeStart = width * 0.5f - edgeFadeMargin;
+            // El fade debe aplicarse al borde del mapa TOTAL (jugable + buffer exterior),
+            // no al borde jugable, para no aplanar la zona de juego.
+            float fadeStart = width * 0.5f + outerBufferWidth - edgeFadeMargin;
             float ax = Mathf.Abs(x);
             if (ax > fadeStart)
             {

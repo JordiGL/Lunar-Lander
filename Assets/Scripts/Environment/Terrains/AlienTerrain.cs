@@ -108,15 +108,19 @@ namespace LunarLander
                 float noise = (Mathf.PerlinNoise(x * 0.5f, seedOffset) - 0.5f) * alienNoise;
 
                 v[i] = baseWaves + spikes + noise;
-                lo = Mathf.Min(lo, v[i]);
-                hi = Mathf.Max(hi, v[i]);
+                // Solo la zona jugable fija la escala; el buffer exterior puede salirse y se recorta luego.
+                if (InPlayableZone(x, startX))
+                {
+                    lo = Mathf.Min(lo, v[i]);
+                    hi = Mathf.Max(hi, v[i]);
+                }
             }
 
             float range = Mathf.Max(0.0001f, hi - lo);
             for (int i = 0; i < pointCount; i++)
             {
                 float norm = (v[i] - lo) / range;
-                v[i] = Mathf.Lerp(minHeight, maxHeight, norm);
+                v[i] = Mathf.LerpUnclamped(minHeight, maxHeight, norm);
             }
             return v;
         }
@@ -225,7 +229,10 @@ namespace LunarLander
         {
             foreach (var p in plans)
                 for (int k = 0; k <= p.widthSeg; k++)
-                    heights[p.startIdx + k] = p.padH;
+                {
+                    int idx = p.startIdx + k;
+                    if (idx >= 0 && idx < heights.Length) heights[idx] = p.padH;
+                }
         }
     }
 }

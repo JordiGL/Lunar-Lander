@@ -106,8 +106,12 @@ namespace LunarLander
                 float rocks = (Mathf.PerlinNoise((x + seedOffset) * canyonFrequency * 10f, 20f) - 0.5f) * rockDetail * wallFactor;
 
                 v[i] = canyonShape + rocks;
-                lo = Mathf.Min(lo, v[i]);
-                hi = Mathf.Max(hi, v[i]);
+                // Solo la zona jugable fija la escala; el buffer exterior puede salirse y se recorta luego.
+                if (InPlayableZone(x, startX))
+                {
+                    lo = Mathf.Min(lo, v[i]);
+                    hi = Mathf.Max(hi, v[i]);
+                }
             }
 
             // Normalizar y escalar
@@ -115,7 +119,7 @@ namespace LunarLander
             for (int i = 0; i < pointCount; i++)
             {
                 float norm = (v[i] - lo) / range;
-                v[i] = Mathf.Lerp(minHeight, maxHeight, norm);
+                v[i] = Mathf.LerpUnclamped(minHeight, maxHeight, norm);
             }
             return v;
         }
@@ -223,7 +227,10 @@ namespace LunarLander
         {
             foreach (var p in plans)
                 for (int k = 0; k <= p.widthSeg; k++)
-                    heights[p.startIdx + k] = p.padH;
+                {
+                    int idx = p.startIdx + k;
+                    if (idx >= 0 && idx < heights.Length) heights[idx] = p.padH;
+                }
         }
     }
 }
