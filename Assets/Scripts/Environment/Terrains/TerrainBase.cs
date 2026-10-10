@@ -30,6 +30,10 @@ namespace LunarLander
         protected const float FillZ = 0.5f;
         protected const float FillEdgeExtension = 200f;
 
+        [Header("Extensión de Relieve Exterior (Sin Pads)")]
+        [Tooltip("Anchura adicional de relieve procedural que se genera a cada lado más allá del límite jugable.")]
+        [SerializeField, Min(0f)] protected float outerBufferWidth = 60f;
+
         [Header("Estilo Retro (Línea Vectorial)")]
         [SerializeField] protected Color vectorRidgeColor = new Color(0.15f, 0.95f, 1.0f);
         [SerializeField] protected float mainLineWidth = 0.08f;
@@ -98,6 +102,27 @@ namespace LunarLander
 
         public IReadOnlyList<LandingPad> LandingPads => landingPads;
 
+        // Límites reales de la geometría generada
+        public bool HasBounds => terrainPoints2D != null && terrainPoints2D.Length >= 2;
+        public float MinX => HasBounds ? transform.TransformPoint(terrainPoints2D[0]).x : 0f;
+        public float MaxX => HasBounds ? transform.TransformPoint(terrainPoints2D[terrainPoints2D.Length - 1]).x : 0f;
+
+        // Límites del sector jugable (donde aplican los StageBoundaries)
+        public float PlayableMinX => MinX + outerBufferWidth;
+        public float PlayableMaxX => MaxX - outerBufferWidth;
+
+        /// <summary>
+        /// Franja (unidades de mundo) a cada lado del mapa donde NO se deben colocar plataformas,
+        /// porque la ocupan los límites laterales del stage (efectos de viento, radiación, polvo...).
+        /// La asigna el StageManager justo antes de llamar a GenerateTerrain().
+        /// </summary>
+        public float ReservedEdgeMargin { get; private set; }
+
+        public void SetReservedEdgeMargin(float margin)
+        {
+            ReservedEdgeMargin = Mathf.Max(0f, margin);
+        }
+
         protected virtual void Awake()
         {
             EnsureComponents();
@@ -137,6 +162,50 @@ namespace LunarLander
             return Mathf.Lerp(terrainPoints2D[i].y, terrainPoints2D[i + 1].y, t);
         }
 
+        /// <summary>
+        /// Margen (en segmentos) a cada lado del mapa dentro del cual NO se pueden colocar plataformas.
+        /// Es el mayor entre el desvanecido de bordes propio del terreno y la franja reservada por
+        /// los límites del stage (más una holgura), para que ninguna plataforma quede dentro de la
+        /// zona de efecto de un límite. Los terrenos deben usarlo en PlanPads().
+        /// </summary>
+        protected int PadEdgeMarginSegments(int pointCount, float stepX, float terrainFadeMargin, float padClearance = 1.5f)
+        {
+            // Sumamos outerBufferWidth al margen interior reservado
+            float units = outerBufferWidth + Mathf.Max(terrainFadeMargin, ReservedEdgeMargin + padClearance);
+            int margin = Mathf.CeilToInt(units / stepX) + 5;
+
+            int maxMargin = Mathf.FloorToInt(pointCount * 0.35f);
+            if (margin > maxMargin)
+            {
+                margin = maxMargin;
+            }
+            return margin;
+        }
+
+        /// <summary>Puntos de la línea del terreno con una prolongación plana a cada lado (sin final visible).</summary>
+        protected Vector3[] BuildExtendedPoints3D()
+        {
+            int n = terrainPoints3D.Length;
+            var pts = new Vector3[n + 2];
+            pts[0] = new Vector3(terrainPoints3D[0].x - FillEdgeExtension, terrainPoints3D[0].y, 0f);
+            System.Array.Copy(terrainPoints3D, 0, pts, 1, n);
+            pts[n + 1] = new Vector3(terrainPoints3D[n - 1].x + FillEdgeExtension, terrainPoints3D[n - 1].y, 0f);
+            return pts;
+        }
+
+        /// <summary>Igual que BuildExtendedPoints3D pero para el collider.</summary>
+        protected List<Vector2> BuildExtendedPoints2D()
+        {
+            int n = terrainPoints2D.Length;
+            var pts = new List<Vector2>(n + 2)
+            {
+                new Vector2(terrainPoints2D[0].x - FillEdgeExtension, terrainPoints2D[0].y)
+            };
+            pts.AddRange(terrainPoints2D);
+            pts.Add(new Vector2(terrainPoints2D[n - 1].x + FillEdgeExtension, terrainPoints2D[n - 1].y));
+            return pts;
+        }
+
         protected void EnsureComponents()
         {
             if (lineRenderer == null) lineRenderer = GetComponent<LineRenderer>();
@@ -156,8 +225,10 @@ namespace LunarLander
                 lineRenderer.loop = false;
                 lineRenderer.numCornerVertices = 2;
                 lineRenderer.numCapVertices = 2;
-                lineRenderer.positionCount = terrainPoints3D.Length;
-                lineRenderer.SetPositions(terrainPoints3D);
+                // La línea se prolonga en plano más allá de los extremos para que no se vea el final del mapa.
+                Vector3[] linePoints = BuildExtendedPoints3D();
+                lineRenderer.positionCount = linePoints.Length;
+                lineRenderer.SetPositions(linePoints);
                 lineRenderer.startWidth = mainLineWidth;
                 lineRenderer.endWidth = mainLineWidth;
                 lineRenderer.sortingOrder = sortingOrder;
@@ -169,7 +240,7 @@ namespace LunarLander
 
             if (edgeCollider != null && terrainPoints2D != null)
             {
-                edgeCollider.SetPoints(new List<Vector2>(terrainPoints2D));
+                edgeCollider.SetPoints(BuildExtendedPoints2D());
             }
 
             CreateSynthwaveFill();
@@ -280,11 +351,12 @@ namespace LunarLander
             float[] glowWidths = { mainLineWidth * 2.5f, mainLineWidth * 6f, mainLineWidth * 12f };
             float[] alphas = { 0.35f, 0.15f, 0.05f };
 
+            Vector3[] glowPoints = BuildExtendedPoints3D();
             for (int k = 0; k < glowWidths.Length; k++)
             {
                 Color c = vectorRidgeColor;
                 c.a = alphas[k] * glowIntensity;
-                CreateLine($"NeonGlow_{k}", terrainPoints3D, c, glowWidths[k], sortingOrder - 1);
+                CreateLine($"NeonGlow_{k}", glowPoints, c, glowWidths[k], sortingOrder - 1);
             }
         }
 
@@ -358,8 +430,9 @@ namespace LunarLander
             for (int c = 0; c < cols; c++)
             {
                 float x, y;
-                if (c == 0) { x = terrainPoints2D[0].x - FillEdgeExtension; y = minGeneratedHeight; }
-                else if (c == cols - 1) { x = terrainPoints2D[n - 1].x + FillEdgeExtension; y = minGeneratedHeight; }
+                // Las columnas de los extremos siguen la altura del primer/último punto (igual que la línea prolongada).
+                if (c == 0) { x = terrainPoints2D[0].x - FillEdgeExtension; y = terrainPoints2D[0].y; }
+                else if (c == cols - 1) { x = terrainPoints2D[n - 1].x + FillEdgeExtension; y = terrainPoints2D[n - 1].y; }
                 else { x = terrainPoints2D[c - 1].x; y = terrainPoints2D[c - 1].y; }
 
                 float midY = Mathf.Max(y - fillFadeDepth, bottomY + 1f);

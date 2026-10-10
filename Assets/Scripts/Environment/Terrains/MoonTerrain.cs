@@ -37,29 +37,30 @@ namespace LunarLander
         {
             rng = new System.Random(randomSeed != 0 ? randomSeed : System.Environment.TickCount);
             seedOffset = (float)rng.NextDouble() * 1000f;
-
-            // Establece la altura mínima que se usará de referencia para Grid y Fill en la clase base
             minGeneratedHeight = minHeight;
 
-            int pointCount = segments + 1;
-            float stepX = width / segments;
-            float startX = -width * 0.5f;
+            // 1. Incorporar el buffer exterior manteniendo la resolución/densidad de vértices
+            float totalWidth = width + (outerBufferWidth * 2f);
+            int totalSegments = Mathf.RoundToInt(segments * (totalWidth / width));
+            int pointCount = totalSegments + 1;
+            float stepX = totalWidth / totalSegments;
+            float startX = -totalWidth * 0.5f;
 
             landingPads.Clear();
 
-            // 1. Ruido Base
+            // 2. Ruido Base continuo sobre todo el ancho total
             float[] heights = BuildBaseHeights(pointCount, stepX, startX);
 
-            // 2. Planificar Plataformas
+            // 3. Planificar Plataformas (PadEdgeMarginSegments protege el buffer exterior y los límites)
             List<PadPlan> plans = PlanPads(pointCount, stepX);
 
-            // 3. Añadir Cráteres (respetando Pads)
+            // 4. Añadir Cráteres (respetando Pads y márgenes)
             for (int c = 0; c < craterCount; c++)
             {
-                AddDecorativeCrater(heights, plans, startX, stepX);
+                AddDecorativeCrater(heights, plans, startX, stepX, totalWidth);
             }
 
-            // 4. Tallar Plataformas
+            // 5. Tallar Plataformas
             for (int p = 0; p < plans.Count; p++)
             {
                 ShapePad(heights, plans[p], startX, stepX);
@@ -69,10 +70,10 @@ namespace LunarLander
             for (int i = 0; i < pointCount; i++) heights[i] = Mathf.Clamp(heights[i], minHeight, maxHeight);
             FlattenPads(heights, plans);
 
-            // 5. Suavizar Bordes del mapa
-            ApplyEdgeFade(heights, startX, stepX);
+            // 6. Suavizar Bordes en los extremos exteriores del mapa total
+            ApplyEdgeFade(heights, startX, stepX, totalWidth);
 
-            // 6. Registrar LandingPads para el GameManager y VectorHUD
+            // 7. Registrar LandingPads para el juego
             for (int p = 0; p < plans.Count; p++)
             {
                 PadPlan plan = plans[p];
@@ -85,7 +86,7 @@ namespace LunarLander
                 });
             }
 
-            // 7. Generar Arrays para Líneas y Colliders
+            // 8. Generar Arrays para Líneas y Colliders
             terrainPoints3D = new Vector3[pointCount];
             terrainPoints2D = new Vector2[pointCount];
             for (int i = 0; i < pointCount; i++)
@@ -95,11 +96,9 @@ namespace LunarLander
                 terrainPoints2D[i] = new Vector2(x, heights[i]);
             }
 
-            // 8. Llamar a VectorTerrain (Clase Base) para dibujar todo
+            // 9. Construir gráficos vectoriales
             BuildTerrainGraphics();
         }
-
-        // --- Funciones Matemáticas Auxiliares (Tomadas de tu código original) ---
 
         private float Rand01() => (float)rng.NextDouble();
         private float RandRange(float a, float b) => Mathf.Lerp(a, b, Rand01());
@@ -155,9 +154,9 @@ namespace LunarLander
             return sum / norm;
         }
 
-        private void ApplyEdgeFade(float[] heights, float startX, float stepX)
+        private void ApplyEdgeFade(float[] heights, float startX, float stepX, float currentTotalWidth)
         {
-            float halfW = width * 0.5f;
+            float halfW = currentTotalWidth * 0.5f;
             float fadeStart = halfW - edgeFadeMargin;
 
             for (int i = 0; i < heights.Length; i++)
@@ -172,12 +171,14 @@ namespace LunarLander
             }
         }
 
-        private void AddDecorativeCrater(float[] heights, List<PadPlan> plans, float startX, float stepX)
+        private void AddDecorativeCrater(float[] heights, List<PadPlan> plans, float startX, float stepX, float currentTotalWidth)
         {
             float radius = RandRange(2.5f, 5.5f);
+            float margin = outerBufferWidth + edgeFadeMargin;
+
             for (int attempt = 0; attempt < 8; attempt++)
             {
-                float cx = RandRange(startX + radius * 2f + edgeFadeMargin, startX + width - radius * 2f - edgeFadeMargin);
+                float cx = RandRange(startX + radius * 2f + margin, startX + currentTotalWidth - radius * 2f - margin);
 
                 bool clear = true;
                 for (int p = 0; p < plans.Count && clear; p++)
@@ -252,7 +253,8 @@ namespace LunarLander
                 var tmp = plans[i]; plans[i] = plans[j]; plans[j] = tmp;
             }
 
-            int edgeMarginSegments = Mathf.CeilToInt(edgeFadeMargin / stepX) + 5;
+            // PadEdgeMarginSegments reserva el buffer exterior + límites del stage + margen propio
+            int edgeMarginSegments = PadEdgeMarginSegments(pointCount, stepX, edgeFadeMargin);
             float zoneWidth = (pointCount - 2 * edgeMarginSegments) / (float)plans.Count;
 
             for (int i = 0; i < plans.Count; i++)
@@ -263,6 +265,26 @@ namespace LunarLander
                 plan.padH = Mathf.Lerp(minHeight, maxHeight, plan.heightFrac);
                 plans[i] = plan;
             }
+
+            // Pasada para evitar solapamientos entre plataformas
+            plans.Sort((a, b) => a.startIdx.CompareTo(b.startIdx));
+            for (int i = 1; i < plans.Count; i++)
+            {
+                PadPlan prev = plans[i - 1], cur = plans[i];
+                int minStart = prev.startIdx + prev.widthSeg + 4;
+                if (cur.startIdx < minStart) { cur.startIdx = minStart; plans[i] = cur; }
+            }
+
+            // Pasada inversa para garantizar que no se empuje ninguna al margen derecho
+            for (int i = plans.Count - 1; i >= 0; i--)
+            {
+                PadPlan cur = plans[i];
+                int maxStart = (i == plans.Count - 1)
+                    ? pointCount - 1 - edgeMarginSegments - cur.widthSeg
+                    : plans[i + 1].startIdx - 4 - cur.widthSeg;
+                if (cur.startIdx > maxStart) { cur.startIdx = maxStart; plans[i] = cur; }
+            }
+
             return plans;
         }
 

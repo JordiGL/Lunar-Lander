@@ -23,6 +23,9 @@ namespace LunarLander
 
         [Tooltip("Punto de reaparición (Spawn) de la nave en este nivel")]
         public Vector2 spawnPosition = new Vector2(0f, 3.5f);
+
+        [Tooltip("Límite lateral de este nivel (viento, radiación, polvo...). Opcional.")]
+        public StageBoundaryBase boundary;
     }
 
     /// <summary>
@@ -83,8 +86,18 @@ namespace LunarLander
                     entry.terrain.gameObject.SetActive(isActive);
                     if (isActive)
                     {
+                        if (entry.boundary != null)
+                        {
+                            entry.terrain.SetReservedEdgeMargin(entry.boundary.ReservedEdgeMargin);
+                        }
                         entry.terrain.GenerateTerrain();
                     }
+                }
+
+                if (entry.boundary != null)
+                {
+                    entry.boundary.gameObject.SetActive(isActive);
+                    if (isActive) entry.boundary.Setup(entry.terrain);
                 }
 
                 if (entry.background != null)

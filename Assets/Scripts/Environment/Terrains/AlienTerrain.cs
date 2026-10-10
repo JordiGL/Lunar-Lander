@@ -37,27 +37,30 @@ namespace LunarLander
             seedOffset = (float)rng.NextDouble() * 1000f;
             minGeneratedHeight = minHeight;
 
-            int pointCount = segments + 1;
-            float stepX = width / segments;
-            float startX = -width * 0.5f;
+            // 1. Incorporar el buffer exterior manteniendo la densidad de vértices
+            float totalWidth = width + (outerBufferWidth * 2f);
+            int totalSegments = Mathf.RoundToInt(segments * (totalWidth / width));
+            int pointCount = totalSegments + 1;
+            float stepX = totalWidth / totalSegments;
+            float startX = -totalWidth * 0.5f;
 
             landingPads.Clear();
 
-            // 1. Ruido Base (Ondas y Spikes)
+            // 2. Ruido Base continuo sobre todo el ancho total (incluyendo el exterior)
             float[] heights = BuildAlienHeights(pointCount, stepX, startX);
 
-            // 2. Planificar Plataformas
+            // 3. Planificar Plataformas (PadEdgeMarginSegments protege el buffer exterior y los límites)
             List<PadPlan> plans = PlanPads(pointCount, stepX);
 
-            // 3. Tallar Plataformas
+            // 4. Tallar Plataformas
             for (int p = 0; p < plans.Count; p++) ShapePad(heights, plans[p], startX, stepX);
 
             FlattenPads(heights, plans);
             for (int i = 0; i < pointCount; i++) heights[i] = Mathf.Clamp(heights[i], minHeight, maxHeight);
             FlattenPads(heights, plans);
 
-            // 4. Suavizar Bordes
-            ApplyEdgeFade(heights, startX, stepX);
+            // 5. Suavizar Bordes en los extremos exteriores del mapa total
+            ApplyEdgeFade(heights, startX, stepX, totalWidth);
 
             for (int p = 0; p < plans.Count; p++)
             {
@@ -92,12 +95,12 @@ namespace LunarLander
             {
                 float x = startX + i * stepX;
 
-                // Interferencia de dos ondas sinusoidales para dar aspecto orgánico/alien
+                // Ondas armónicas alienígenas continuas
                 float wave1 = Mathf.Sin((x + seedOffset) * waveFrequency);
-                float wave2 = Mathf.Cos((x + seedOffset) * waveFrequency * 1.618f); // Golden ratio
+                float wave2 = Mathf.Cos((x + seedOffset) * waveFrequency * 1.618f);
                 float baseWaves = wave1 * wave2;
 
-                // Spikes (Púas cristalinas) hechas elevando el seno a una potencia par muy alta
+                // Spikes cristalinos
                 float spikePhase = Mathf.Sin((x + seedOffset * 2f) * waveFrequency * 3.5f);
                 float spikes = Mathf.Pow(spikePhase, 12f) * spikeIntensity * 5f;
 
@@ -109,7 +112,6 @@ namespace LunarLander
                 hi = Mathf.Max(hi, v[i]);
             }
 
-            // Normalizar y escalar
             float range = Mathf.Max(0.0001f, hi - lo);
             for (int i = 0; i < pointCount; i++)
             {
@@ -119,9 +121,9 @@ namespace LunarLander
             return v;
         }
 
-        private void ApplyEdgeFade(float[] heights, float startX, float stepX)
+        private void ApplyEdgeFade(float[] heights, float startX, float stepX, float currentTotalWidth)
         {
-            float halfW = width * 0.5f;
+            float halfW = currentTotalWidth * 0.5f;
             float fadeStart = halfW - edgeFadeMargin;
 
             for (int i = 0; i < heights.Length; i++)
@@ -145,22 +147,23 @@ namespace LunarLander
             {
                 PadKind kind = (i % 3 == 0) ? PadKind.Peak : PadKind.Plain;
                 int mult = kind == PadKind.Peak ? 5 : 2;
-                if (i == 1) mult = 3; // Asegurar algo de variedad
+                if (i == 1) mult = 3;
 
-                float widthUnits = minPadWidth * (mult == 5 ? 0.7f : 1.3f); // Muy estrechas las de alien
+                float widthUnits = minPadWidth * (mult == 5 ? 0.7f : 1.3f);
 
                 plans.Add(new PadPlan
                 {
                     kind = kind,
                     multiplier = mult,
                     widthUnits = widthUnits,
-                    heightFrac = kind == PadKind.Peak ? 0.9f : 0.3f, // Muy altas o bajas
+                    heightFrac = kind == PadKind.Peak ? 0.9f : 0.3f,
                     widthSeg = Mathf.Max(2, Mathf.CeilToInt(widthUnits / stepX)),
                     wallSide = 0
                 });
             }
 
-            int margin = Mathf.CeilToInt(edgeFadeMargin / stepX) + 5;
+            // PadEdgeMarginSegments ya contempla outerBufferWidth + ReservedEdgeMargin + edgeFadeMargin
+            int margin = PadEdgeMarginSegments(pointCount, stepX, edgeFadeMargin);
             float zoneWidth = (pointCount - 2 * margin) / (float)plans.Count;
 
             for (int i = 0; i < plans.Count; i++)
@@ -171,6 +174,26 @@ namespace LunarLander
                 plan.padH = Mathf.Lerp(minHeight, maxHeight, plan.heightFrac);
                 plans[i] = plan;
             }
+
+            // Pasada para evitar solapamientos
+            plans.Sort((a, b) => a.startIdx.CompareTo(b.startIdx));
+            for (int i = 1; i < plans.Count; i++)
+            {
+                PadPlan prev = plans[i - 1], cur = plans[i];
+                int minStart = prev.startIdx + prev.widthSeg + 4;
+                if (cur.startIdx < minStart) { cur.startIdx = minStart; plans[i] = cur; }
+            }
+
+            // Pasada inversa para garantizar que no empuje ninguna al margen derecho
+            for (int i = plans.Count - 1; i >= 0; i--)
+            {
+                PadPlan cur = plans[i];
+                int maxStart = (i == plans.Count - 1)
+                    ? pointCount - 1 - margin - cur.widthSeg
+                    : plans[i + 1].startIdx - 4 - cur.widthSeg;
+                if (cur.startIdx > maxStart) { cur.startIdx = maxStart; plans[i] = cur; }
+            }
+
             return plans;
         }
 
@@ -189,15 +212,20 @@ namespace LunarLander
                 if (d == 0f) { heights[i] = plan.padH; continue; }
 
                 float orig = heights[i];
-                float slopeNoise = (Mathf.PerlinNoise(x * 3f, seedOffset) - 0.5f) * 0.5f; // Más caótico
+                float slopeNoise = (Mathf.PerlinNoise(x * 3f, seedOffset) - 0.5f) * 0.5f;
 
                 if (plan.kind == PadKind.Peak)
-                    heights[i] = Mathf.Max(orig, plan.padH - d * 2.5f + slopeNoise); // Agujas afiladas soportando el pad
+                    heights[i] = Mathf.Max(orig, plan.padH - d * 2.5f + slopeNoise);
                 else
                     heights[i] = Mathf.Lerp(orig, plan.padH + d * 0.2f + slopeNoise, 1f - Smooth(4f, 10f, d));
             }
         }
 
-        private static void FlattenPads(float[] heights, List<PadPlan> plans) { foreach (var p in plans) for (int k = 0; k <= p.widthSeg; k++) heights[p.startIdx + k] = p.padH; }
+        private static void FlattenPads(float[] heights, List<PadPlan> plans)
+        {
+            foreach (var p in plans)
+                for (int k = 0; k <= p.widthSeg; k++)
+                    heights[p.startIdx + k] = p.padH;
+        }
     }
 }

@@ -180,9 +180,12 @@ namespace LunarLander
             landingPads.Clear();
             plantsStartTime = Time.time;
 
-            int pointCount = segments + 1;
-            float stepX = width / segments;
-            float startX = -width * 0.5f;
+            float totalWidth = width + (outerBufferWidth * 2f);
+            // Mantener la misma densidad de segmentos para que el detalle sea idéntico
+            int totalSegments = Mathf.RoundToInt(segments * (totalWidth / width));
+            int pointCount = totalSegments + 1;
+            float stepX = totalWidth / totalSegments;
+            float startX = -totalWidth * 0.5f;
 
             // 1. Plataformas
             List<PadPlan> plans = PlanPads(pointCount, stepX);
@@ -264,7 +267,8 @@ namespace LunarLander
         private List<PadPlan> PlanPads(int pointCount, float stepX)
         {
             var plans = new List<PadPlan>();
-            int margin = Mathf.CeilToInt(edgeFadeMargin / stepX) + 5;
+            // Respeta el desvanecido de bordes y la franja reservada por los límites del stage.
+            int margin = PadEdgeMarginSegments(pointCount, stepX, edgeFadeMargin);
             float zoneWidth = (pointCount - 2 * margin) / (float)padCount;
             int[] mults = { 2, 3, 4, 5, 3, 2, 4 };
 
@@ -288,6 +292,23 @@ namespace LunarLander
                 PadPlan prev = plans[i - 1], cur = plans[i];
                 int minStart = prev.startIdx + prev.widthSeg + 4;
                 if (cur.startIdx < minStart) { cur.startIdx = minStart; plans[i] = cur; }
+            }
+
+            // Pasada inversa: el desplazamiento anterior podía empujar plataformas por encima del margen derecho
+            // (dentro de la zona de un límite). Se vuelven a traer hacia dentro.
+            for (int i = plans.Count - 1; i >= 0; i--)
+            {
+                PadPlan cur = plans[i];
+                int maxStart = i == plans.Count - 1
+                    ? pointCount - 2 - margin - cur.widthSeg
+                    : plans[i + 1].startIdx - 4 - cur.widthSeg;
+                if (cur.startIdx > maxStart) { cur.startIdx = maxStart; plans[i] = cur; }
+            }
+
+            if (plans.Count > 0 && plans[0].startIdx < margin)
+            {
+                Debug.LogWarning("DystopianTVTerrain: no caben todas las plataformas en la zona jugable. " +
+                                 "Reduce padCount o aumenta el width del terreno.");
             }
             return plans;
         }

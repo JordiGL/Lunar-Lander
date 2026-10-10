@@ -37,27 +37,30 @@ namespace LunarLander
             seedOffset = (float)rng.NextDouble() * 1000f;
             minGeneratedHeight = minHeight;
 
-            int pointCount = segments + 1;
-            float stepX = width / segments;
-            float startX = -width * 0.5f;
+            // 1. Incorporar el buffer exterior manteniendo la misma resolución/densidad
+            float totalWidth = width + (outerBufferWidth * 2f);
+            int totalSegments = Mathf.RoundToInt(segments * (totalWidth / width));
+            int pointCount = totalSegments + 1;
+            float stepX = totalWidth / totalSegments;
+            float startX = -totalWidth * 0.5f;
 
             landingPads.Clear();
 
-            // 1. Ruido Base (Mesetas y Barrancos)
+            // 2. Ruido Base (Mesetas y Barrancos sobre el ancho total)
             float[] heights = BuildCanyonHeights(pointCount, stepX, startX);
 
-            // 2. Planificar Plataformas
+            // 3. Planificar Plataformas (PadEdgeMarginSegments protege el buffer exterior y los límites)
             List<PadPlan> plans = PlanPads(pointCount, stepX);
 
-            // 3. Tallar Plataformas
+            // 4. Tallar Plataformas
             for (int p = 0; p < plans.Count; p++) ShapePad(heights, plans[p], startX, stepX);
 
             FlattenPads(heights, plans);
             for (int i = 0; i < pointCount; i++) heights[i] = Mathf.Clamp(heights[i], minHeight, maxHeight);
             FlattenPads(heights, plans);
 
-            // 4. Suavizar Bordes
-            ApplyEdgeFade(heights, startX, stepX);
+            // 5. Suavizar Bordes en los extremos exteriores del mapa total
+            ApplyEdgeFade(heights, startX, stepX, totalWidth);
 
             for (int p = 0; p < plans.Count; p++)
             {
@@ -99,7 +102,7 @@ namespace LunarLander
                 float canyonShape = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((baseNoise - 0.5f) * cliffSteepness + 0.5f));
 
                 // Añadir detalle rocoso a las paredes (se aplica menos en las zonas planas)
-                float wallFactor = 1f - Mathf.Abs(canyonShape - 0.5f) * 2f; // 1 en la pared, 0 en el plano
+                float wallFactor = 1f - Mathf.Abs(canyonShape - 0.5f) * 2f;
                 float rocks = (Mathf.PerlinNoise((x + seedOffset) * canyonFrequency * 10f, 20f) - 0.5f) * rockDetail * wallFactor;
 
                 v[i] = canyonShape + rocks;
@@ -117,9 +120,9 @@ namespace LunarLander
             return v;
         }
 
-        private void ApplyEdgeFade(float[] heights, float startX, float stepX)
+        private void ApplyEdgeFade(float[] heights, float startX, float stepX, float currentTotalWidth)
         {
-            float halfW = width * 0.5f;
+            float halfW = currentTotalWidth * 0.5f;
             float fadeStart = halfW - edgeFadeMargin;
 
             for (int i = 0; i < heights.Length; i++)
@@ -128,7 +131,7 @@ namespace LunarLander
                 if (x > fadeStart)
                 {
                     float t = Mathf.Clamp01((x - fadeStart) / edgeFadeMargin);
-                    heights[i] = Mathf.Lerp(heights[i], maxHeight - 2f, t * t * (3f - 2f * t)); // En el cañón sube hacia el borde
+                    heights[i] = Mathf.Lerp(heights[i], maxHeight - 2f, t * t * (3f - 2f * t));
                 }
             }
         }
@@ -141,7 +144,6 @@ namespace LunarLander
             var plans = new List<PadPlan>();
             for (int i = 0; i < padCount; i++)
             {
-                // El cañón favorece Ledges (Repisas) y Canyons (Fondo)
                 PadKind kind = (i % 2 == 0) ? PadKind.Canyon : PadKind.Ledge;
                 int mult = kind == PadKind.Canyon ? 5 : 3;
                 float widthUnits = minPadWidth * (mult == 5 ? 0.8f : 1.2f);
@@ -151,14 +153,14 @@ namespace LunarLander
                     kind = kind,
                     multiplier = mult,
                     widthUnits = widthUnits,
-                    heightFrac = kind == PadKind.Canyon ? 0.05f : 0.6f, // Fondo vs Repisa
+                    heightFrac = kind == PadKind.Canyon ? 0.05f : 0.6f,
                     widthSeg = Mathf.Max(2, Mathf.CeilToInt(widthUnits / stepX)),
                     wallSide = Rand01() < 0.5f ? -1 : 1
                 });
             }
 
-            // Distribución equitativa
-            int margin = Mathf.CeilToInt(edgeFadeMargin / stepX) + 5;
+            // PadEdgeMarginSegments reserva el buffer exterior + ReservedEdgeMargin + margen propio
+            int margin = PadEdgeMarginSegments(pointCount, stepX, edgeFadeMargin);
             float zoneWidth = (pointCount - 2 * margin) / (float)plans.Count;
 
             for (int i = 0; i < plans.Count; i++)
@@ -169,6 +171,26 @@ namespace LunarLander
                 plan.padH = Mathf.Lerp(minHeight, maxHeight, plan.heightFrac);
                 plans[i] = plan;
             }
+
+            // Pasada para ordenar y evitar solapamientos
+            plans.Sort((a, b) => a.startIdx.CompareTo(b.startIdx));
+            for (int i = 1; i < plans.Count; i++)
+            {
+                PadPlan prev = plans[i - 1], cur = plans[i];
+                int minStart = prev.startIdx + prev.widthSeg + 4;
+                if (cur.startIdx < minStart) { cur.startIdx = minStart; plans[i] = cur; }
+            }
+
+            // Pasada inversa para garantizar que ninguna plataforma se desplace al margen derecho
+            for (int i = plans.Count - 1; i >= 0; i--)
+            {
+                PadPlan cur = plans[i];
+                int maxStart = (i == plans.Count - 1)
+                    ? pointCount - 1 - margin - cur.widthSeg
+                    : plans[i + 1].startIdx - 4 - cur.widthSeg;
+                if (cur.startIdx > maxStart) { cur.startIdx = maxStart; plans[i] = cur; }
+            }
+
             return plans;
         }
 
@@ -191,12 +213,17 @@ namespace LunarLander
                 float slopeNoise = (Mathf.PerlinNoise(x * 2f, 0f) - 0.5f) * 0.2f;
 
                 if (plan.kind == PadKind.Canyon) res = Mathf.Lerp(orig, Mathf.Max(orig, plan.padH + Mathf.Min(d * 4f, 15f) + slopeNoise), 1f - Smooth(4f, 12f, d));
-                else if (plan.kind == PadKind.Ledge) res = Mathf.Lerp(orig, plan.padH + slopeNoise, 1f - Smooth(2f, 8f, d)); // Talla una repisa dura
+                else if (plan.kind == PadKind.Ledge) res = Mathf.Lerp(orig, plan.padH + slopeNoise, 1f - Smooth(2f, 8f, d));
 
                 heights[i] = res;
             }
         }
 
-        private static void FlattenPads(float[] heights, List<PadPlan> plans) { foreach (var p in plans) for (int k = 0; k <= p.widthSeg; k++) heights[p.startIdx + k] = p.padH; }
+        private static void FlattenPads(float[] heights, List<PadPlan> plans)
+        {
+            foreach (var p in plans)
+                for (int k = 0; k <= p.widthSeg; k++)
+                    heights[p.startIdx + k] = p.padH;
+        }
     }
 }
