@@ -16,11 +16,8 @@ namespace LunarLander
         [SerializeField] private LanderController lander;
         [SerializeField] private StandardHUD hud;
 
-        [Tooltip("Gestor de pantallas/niveles (cada una con su Terreno y SpaceBackground).")]
+        [Tooltip("Gestor de pantallas/niveles (cada una con su Terreno, Fondo, Límites y Música).")]
         [SerializeField] private StageManager stageManager;
-
-        [Tooltip("Opcional: Si aún usas el antiguo TerrainManager como alternativa.")]
-        [SerializeField] private TerrainManager terrainManager;
 
         [Header("Configuración de Puntuación")]
         [Tooltip("Puntos base por un aterrizaje exitoso.")]
@@ -43,11 +40,9 @@ namespace LunarLander
 
         private void Awake()
         {
-            // Búsqueda de referencias por si no se asignaron en el Inspector
             if (lander == null) lander = FindFirstObjectByType<LanderController>();
             if (hud == null) hud = FindFirstObjectByType<StandardHUD>();
             if (stageManager == null) stageManager = FindFirstObjectByType<StageManager>();
-            if (terrainManager == null && stageManager == null) terrainManager = FindFirstObjectByType<TerrainManager>();
         }
 
         private void OnEnable()
@@ -93,7 +88,7 @@ namespace LunarLander
         }
 
         /// <summary>
-        /// Configura el entorno activo (StageManager o TerrainManager de respaldo).
+        /// Configura el entorno activo mediante StageManager.
         /// </summary>
         private void SetupActiveStage()
         {
@@ -107,10 +102,6 @@ namespace LunarLander
                     currentTerrain = stage.terrain;
                     currentSpawnPosition = stage.spawnPosition;
                 }
-            }
-            else if (terrainManager != null)
-            {
-                currentTerrain = terrainManager.SetupTerrain();
             }
         }
 
@@ -132,7 +123,6 @@ namespace LunarLander
                 if (lander != null) lander.AddFuel(250f);
             }
 
-            // Si se desea pasar de nivel al aterrizar
             if (advanceStageOnLanding)
             {
                 ScheduleReset(nextStage: true);
@@ -141,7 +131,6 @@ namespace LunarLander
 
         private void HandleCrashed(LandingResult result)
         {
-            // En caso de colisión se espera y se reintenta la pantalla actual
             ScheduleReset(nextStage: false);
         }
 
@@ -182,8 +171,9 @@ namespace LunarLander
             if (nextStage && stageManager != null)
             {
                 stageManager.NextStage();
-                SetupActiveStage();
             }
+
+            SetupActiveStage();
 
             if (currentTerrain != null)
             {
