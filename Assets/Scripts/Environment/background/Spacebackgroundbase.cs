@@ -5,15 +5,16 @@ using UnityEngine.Rendering;
 namespace LunarLander
 {
     /// <summary>
-    /// Fondo espacial 100% procedural: degradado de cielo, nebulosa, estrellas con
-    /// parallax y parpadeo, estrellas fugaces y reacción al ritmo de la música.
+    /// Base de los fondos espaciales. Contiene lo que comparten todos los estilos:
+    /// cámara, nodo raíz, capas con parallax, estrella fugaz y el audio reactivo
+    /// (bombo y caja). Cada clase hija decide QUÉ capas dibujar en BuildLayers().
     /// </summary>
     [DisallowMultipleComponent]
     [DefaultExecutionOrder(200)]
-    public sealed class SpaceBackground : MonoBehaviour
+    public abstract class SpaceBackgroundBase : MonoBehaviour
     {
         // ------------------------------------------------------------------
-        // Configuración
+        // Configuración común
         // ------------------------------------------------------------------
 
         [Header("General")]
@@ -29,32 +30,14 @@ namespace LunarLander
         [Tooltip("Orden de dibujado del fondo. Debe ser menor que el del terreno.")]
         [SerializeField] private int sortingOrderBase = -200;
 
-        [Header("Cielo")]
-        [SerializeField] private Color skyTop = new Color(0.005f, 0.01f, 0.04f);
-        [SerializeField] private Color skyBottom = new Color(0.05f, 0.02f, 0.09f);
-        [SerializeField] private Color horizonGlow = new Color(0.10f, 0.05f, 0.16f);
-
-        [Header("Estrellas")]
-        [SerializeField, Range(0.1f, 3f)] private float starDensity = 1f;
-        [SerializeField] private bool twinkle = true;
-        [SerializeField, Range(0f, 1f)] private float twinkleDepth = 0.45f;
-        [Tooltip("Deriva lenta y constante de las estrellas (unidades de textura por segundo).")]
-        [SerializeField, Min(0f)] private float starDrift = 0.0015f;
-
-        [Header("Nebulosa")]
-        [SerializeField] private bool showNebula = true;
-        [SerializeField] private Color nebulaColorA = new Color(0.50f, 0.15f, 0.80f);
-        [SerializeField] private Color nebulaColorB = new Color(0.08f, 0.50f, 0.85f);
-        [SerializeField, Range(0f, 1f)] private float nebulaIntensity = 0.55f;
-
         [Header("Estrellas fugaces")]
         [SerializeField] private bool shootingStars = true;
         [SerializeField, Min(0.5f)] private float shootingMinInterval = 3f;
         [SerializeField, Min(0.5f)] private float shootingMaxInterval = 9f;
 
         [Header("Audio Reactivo (Estrellas)")]
+        [Tooltip("Música del stage. Si no se asigna, se analiza todo lo que oye el AudioListener.")]
         [SerializeField] private AudioSource musicSource;
-        [Tooltip("Si no se asigna, se analiza todo lo que oye el AudioListener.")]
         [SerializeField, Range(1.05f, 3f)] private float beatSensitivity = 1.35f;
         [Tooltip("Energía mínima de graves para considerar un beat (evita falsos beats en silencio).")]
         [SerializeField, Min(0f)] private float minBeatEnergy = 0.0005f;
@@ -65,11 +48,24 @@ namespace LunarLander
         [Tooltip("Cuánto reaccionan las estrellas brillantes frente a las lejanas.")]
         [SerializeField, Range(0f, 1f)] private float pulseStrength = 1f;
 
+        [Header("Caja (snare)")]
+        [SerializeField] private bool reactToSnare = true;
+        [Tooltip("Cuánto debe subir la banda de la caja sobre su media para contar como golpe.")]
+        [SerializeField, Range(1.05f, 3f)] private float snareSensitivity = 1.6f;
+        [Tooltip("Energía mínima de la banda de la caja (evita falsos golpes en silencio).")]
+        [SerializeField, Min(0f)] private float minSnareEnergy = 0.0003f;
+        [SerializeField, Range(0.08f, 0.5f)] private float snareCooldown = 0.12f;
+        [Tooltip("Banda de frecuencias del chasquido de la caja. Subir el máximo mete más hi-hats.")]
+        [SerializeField, Min(200f)] private float snareLowHz = 1500f;
+        [SerializeField, Min(500f)] private float snareHighHz = 4500f;
+        [Tooltip("Intensidad del pulso de la caja respecto al del bombo (1 = igual).")]
+        [SerializeField, Range(0f, 1f)] private float snarePulseStrength = 0.8f;
+
         // ------------------------------------------------------------------
         // Tipos internos
         // ------------------------------------------------------------------
 
-        private sealed class Layer
+        protected sealed class Layer
         {
             public GameObject go;
             public Mesh mesh;
@@ -80,18 +76,20 @@ namespace LunarLander
             public float parallax;
             public float tilesY = 1f;
             public float drift;
+            public float driftY;               // Desplazamiento vertical continuo (lluvia, humo...). Positivo = el contenido cae.
+            public float parallaxYScale = 1f;  // 0 = la capa no sigue a la cámara en vertical (horizontes, ciudades).
             public float alpha = 1f;
             public bool twinkle;
             public float twinkleSpeed;
             public float twinklePhase;
-            public bool reactsToAudio; // Indica si reacciona a los pulsos de la música
+            public float twinkleDepth = 0.45f;
+            public bool reactsToAudio; // Reacciona a los pulsos de la música
         }
 
         // ------------------------------------------------------------------
         // Estado
         // ------------------------------------------------------------------
 
-        private const int StarTexSize = 1024;
         private const float ViewMargin = 1.03f;
 
         private Camera cam;
@@ -112,50 +110,83 @@ namespace LunarLander
         private float audioPulse = 0f;
         private float bassAverage = 0f;
         private float lastBeatTime = -10f;
+        private float snareAverage = 0f;
+        private float lastSnareTime = -10f;
+
+        // ------------------------------------------------------------------
+        // Contrato para las clases hijas
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Crea las capas visuales (cielo, nebulosa, estrellas...) usando CreateLayer().
+        /// Se llama una vez desde Awake, cuando cámara, raíz y rng ya existen.
+        /// </summary>
+        protected abstract void BuildLayers();
+
+        /// <summary>Color de fondo de la cámara mientras este fondo está activo.</summary>
+        protected virtual Color CameraBackgroundColor => Color.black;
+
+        protected int SortingOrderBase => sortingOrderBase;
+        protected System.Random Rng => rng;
+        protected Camera Cam => cam;
+
+        /// <summary>Pulso actual del audio (0..1): 1 justo en un golpe de bombo o caja y decae después.</summary>
+        protected float AudioPulse => audioPulse;
 
         // ------------------------------------------------------------------
         // Ciclo de vida
         // ------------------------------------------------------------------
 
-        private void Awake()
+        protected virtual void Awake()
         {
             cam = targetCamera != null ? targetCamera : Camera.main;
             if (cam == null) cam = FindFirstObjectByType<Camera>();
             if (cam == null)
             {
-                Debug.LogWarning("SpaceBackground: no se encontró ninguna cámara.");
+                Debug.LogWarning($"{GetType().Name}: no se encontró ninguna cámara.");
                 enabled = false;
                 return;
             }
 
             rng = new System.Random(seed != 0 ? seed : System.Environment.TickCount);
 
-            cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = skyTop;
-
             BuildRoot();
-            BuildSky();
-            if (showNebula) BuildNebula();
-            BuildStars();
+            BuildLayers();
             if (shootingStars) BuildShootingStar();
 
             shootTimer = Mathf.Lerp(shootingMinInterval, shootingMaxInterval, Rand01());
             UpdateFrame();
         }
 
-        private void Update()
+        protected virtual void OnEnable()
+        {
+            if (root != null) root.gameObject.SetActive(true);
+
+            if (cam != null)
+            {
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = CameraBackgroundColor;
+            }
+        }
+
+        protected virtual void OnDisable()
+        {
+            if (root != null) root.gameObject.SetActive(false);
+        }
+
+        protected virtual void Update()
         {
             UpdateShooting(Time.deltaTime);
             UpdateAudioPulse();
         }
 
-        private void LateUpdate()
+        protected virtual void LateUpdate()
         {
             if (cam == null || root == null) return;
             UpdateFrame();
         }
 
-        private void OnDestroy()
+        protected virtual void OnDestroy()
         {
             for (int i = 0; i < layers.Count; i++)
             {
@@ -183,32 +214,52 @@ namespace LunarLander
             if (hasSource) musicSource.GetSpectrumData(spectrumData, 0, FFTWindow.Blackman);
             else AudioListener.GetSpectrumData(spectrumData, 0, FFTWindow.Blackman);
 
-            // 1024 bins => ~21 Hz por bin a 44.1 kHz. Bins 2..8 ≈ 43-190 Hz (bombo/bajo).
-            float energy = 0f;
-            for (int i = 2; i <= 8; i++) energy += spectrumData[i];
-            energy /= 7f;
+            // Hz por bin según la frecuencia de muestreo real (≈21 Hz a 44.1 kHz).
+            float binHz = AudioSettings.outputSampleRate * 0.5f / spectrumData.Length;
 
-            // Un beat es un pico de graves respecto a la media reciente (adaptativo al volumen).
-            bool isBeat = energy > minBeatEnergy
-                          && energy > bassAverage * beatSensitivity
-                          && Time.time - lastBeatTime > beatCooldown;
+            // ---- Bombo: graves (~43-190 Hz) ----
+            float bass = 0f;
+            for (int i = 2; i <= 8; i++) bass += spectrumData[i];
+            bass /= 7f;
 
-            if (isBeat)
+            bool kick = bass > minBeatEnergy
+                        && bass > bassAverage * beatSensitivity
+                        && Time.time - lastBeatTime > beatCooldown;
+            if (kick)
             {
                 lastBeatTime = Time.time;
                 audioPulse = 1f;
             }
+            bassAverage = Mathf.Lerp(bassAverage, bass, Time.deltaTime * 4f);
 
-            bassAverage = Mathf.Lerp(bassAverage, energy, Time.deltaTime * 4f);
+            // ---- Caja: chasquido (~1.5-4.5 kHz) ----
+            if (!reactToSnare) return;
+
+            int lo = Mathf.Clamp(Mathf.RoundToInt(snareLowHz / binHz), 2, spectrumData.Length - 2);
+            int hi = Mathf.Clamp(Mathf.RoundToInt(snareHighHz / binHz), lo + 1, spectrumData.Length - 1);
+
+            float snare = 0f;
+            for (int i = lo; i <= hi; i++) snare += spectrumData[i];
+            snare /= (hi - lo + 1);
+
+            bool snareHit = snare > minSnareEnergy
+                            && snare > snareAverage * snareSensitivity
+                            && Time.time - lastSnareTime > snareCooldown;
+            if (snareHit)
+            {
+                lastSnareTime = Time.time;
+                audioPulse = Mathf.Max(audioPulse, snarePulseStrength);
+            }
+            snareAverage = Mathf.Lerp(snareAverage, snare, Time.deltaTime * 6f);
         }
 
         // ------------------------------------------------------------------
-        // Construcción
+        // Construcción (utilidades para las hijas)
         // ------------------------------------------------------------------
 
-        private float Rand01() => (float)rng.NextDouble();
+        protected float Rand01() => (float)rng.NextDouble();
 
-        private static Shader SpriteShader()
+        protected static Shader SpriteShader()
         {
             Shader s = Shader.Find("Sprites/Default");
             if (s == null) s = Shader.Find("Universal Render Pipeline/Unlit");
@@ -217,7 +268,7 @@ namespace LunarLander
 
         private void BuildRoot()
         {
-            var go = new GameObject("SpaceBackground_Root");
+            var go = new GameObject($"SpaceBackground_Root_{gameObject.name}");
             root = go.transform;
             root.SetParent(cam.transform, false);
 
@@ -226,9 +277,10 @@ namespace LunarLander
             root.localRotation = Quaternion.identity;
 
             spriteMaterial = new Material(SpriteShader()) { name = "SpaceBackground Sprite" };
+            root.gameObject.SetActive(isActiveAndEnabled);
         }
 
-        private Mesh BuildQuadMesh(string name)
+        private static Mesh BuildQuadMesh(string name)
         {
             var mesh = new Mesh { name = "SpaceBG_" + name };
             mesh.vertices = new[]
@@ -244,7 +296,8 @@ namespace LunarLander
             return mesh;
         }
 
-        private Layer CreateLayer(string name, Texture2D tex, int order, float parallax, float tilesY, bool scrolls)
+        /// <summary>Crea una capa a pantalla completa con la textura dada. La base la actualiza cada frame.</summary>
+        protected Layer CreateLayer(string name, Texture2D tex, int order, float parallax, float tilesY, bool scrolls)
         {
             var layer = new Layer
             {
@@ -272,209 +325,13 @@ namespace LunarLander
             return layer;
         }
 
-        // ---- Cielo -------------------------------------------------------
-
-        private void BuildSky()
+        /// <summary>Activa el parpadeo de una capa.</summary>
+        protected void SetTwinkle(Layer l, bool enabled, float speed, float depth)
         {
-            const int w = 128, h = 256;
-            var px = new Color32[w * h];
-
-            for (int y = 0; y < h; y++)
-            {
-                float t = y / (float)(h - 1);
-                Color c = Color.Lerp(skyBottom, skyTop, Smooth(0f, 1f, t));
-                float glow = Mathf.Pow(1f - t, 3f) * 0.7f;
-                c += horizonGlow * glow;
-
-                for (int x = 0; x < w; x++)
-                {
-                    float n = (Rand01() - 0.5f) * 1.5f / 255f;
-                    px[y * w + x] = new Color32(
-                        ToByte(c.r + n), ToByte(c.g + n), ToByte(c.b + n), 255);
-                }
-            }
-
-            var tex = new Texture2D(w, h, TextureFormat.RGBA32, false)
-            {
-                name = "BG_Sky",
-                wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Bilinear
-            };
-            tex.SetPixels32(px);
-            tex.Apply(false, true);
-
-            CreateLayer("Sky", tex, sortingOrderBase, 0f, 1f, false);
-        }
-
-        // ---- Nebulosa ----------------------------------------------------
-
-        private void BuildNebula()
-        {
-            const int size = 512;
-            int s1 = rng.Next(), s2 = rng.Next(), s3 = rng.Next();
-            Vector3 ca = V(nebulaColorA), cb = V(nebulaColorB);
-            var px = new Color32[size * size];
-
-            for (int y = 0; y < size; y++)
-            {
-                float v = y / (float)size;
-                for (int x = 0; x < size; x++)
-                {
-                    float u = x / (float)size;
-
-                    float d = PeriodicFbm(u, v, 3, 5, s1);
-                    d = Mathf.Clamp01((d - 0.40f) / 0.45f);
-                    d = d * d * (3f - 2f * d);
-                    d = Mathf.Pow(d, 1.35f);
-
-                    float hue = PeriodicFbm(u, v, 2, 3, s2);
-                    float dust = PeriodicFbm(u, v, 6, 4, s3);
-                    float detail = 0.6f + 0.8f * dust;
-
-                    Vector3 col = Vector3.Lerp(ca, cb, Smooth(0.35f, 0.65f, hue)) * detail;
-                    float a = Mathf.Clamp01(d * nebulaIntensity * 0.55f * detail);
-
-                    px[y * size + x] = new Color32(ToByte(col.x), ToByte(col.y), ToByte(col.z), ToByte(a));
-                }
-            }
-
-            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false)
-            {
-                name = "BG_Nebula",
-                wrapMode = TextureWrapMode.Repeat,
-                filterMode = FilterMode.Bilinear
-            };
-            tex.SetPixels32(px);
-            tex.Apply(false, true);
-
-            Layer l = CreateLayer("Nebula", tex, sortingOrderBase + 5, 0.012f, 0.7f, true);
-            l.drift = 0.0006f;
-        }
-
-        // ---- Estrellas ---------------------------------------------------
-
-        private void BuildStars()
-        {
-            int d(int n) => Mathf.Max(1, Mathf.RoundToInt(n * starDensity));
-
-            Layer far = CreateLayer("StarsFar",
-                MakeStarTexture(StarTexSize, d(1500), 0.55f, 0.8f, 0.25f, 2.2f, false),
-                sortingOrderBase + 10, 0.010f, 1.1f, true);
-            far.alpha = 0.9f;
-            far.drift = starDrift * 0.5f;
-            far.reactsToAudio = true; // Reacciona al audio
-
-            Layer mid = CreateLayer("StarsMid",
-                MakeStarTexture(StarTexSize, d(520), 0.8f, 1.1f, 0.35f, 1.8f, false),
-                sortingOrderBase + 11, 0.025f, 1.5f, true);
-            mid.drift = starDrift * 0.8f;
-            SetTwinkle(mid, 0.9f);
-            mid.reactsToAudio = true; // Reacciona al audio
-
-            Layer b1 = CreateLayer("StarsBright1",
-                MakeStarTexture(StarTexSize, d(45), 1.1f, 1.6f, 0.6f, 1.2f, true),
-                sortingOrderBase + 12, 0.045f, 2.0f, true);
-            b1.drift = starDrift;
-            SetTwinkle(b1, 1.7f);
-            b1.reactsToAudio = true; // Reacciona al audio
-
-            Layer b2 = CreateLayer("StarsBright2",
-                MakeStarTexture(StarTexSize, d(40), 1.1f, 1.6f, 0.6f, 1.2f, true),
-                sortingOrderBase + 13, 0.060f, 2.3f, true);
-            b2.drift = starDrift * 1.2f;
-            SetTwinkle(b2, 2.6f);
-            b2.reactsToAudio = true; // Reacciona al audio
-        }
-
-        private void SetTwinkle(Layer l, float speed)
-        {
-            l.twinkle = twinkle;
+            l.twinkle = enabled;
             l.twinkleSpeed = speed;
+            l.twinkleDepth = depth;
             l.twinklePhase = Rand01() * 6.2831f;
-        }
-
-        private Vector3 StarColor()
-        {
-            float r = Rand01();
-            if (r < 0.55f) return new Vector3(0.80f, 0.88f, 1.00f);
-            if (r < 0.80f) return new Vector3(1.00f, 0.97f, 0.92f);
-            if (r < 0.92f) return new Vector3(1.00f, 0.85f, 0.55f);
-            return new Vector3(1.00f, 0.60f, 0.45f);
-        }
-
-        private Texture2D MakeStarTexture(int size, int count, float minSigma, float maxSigma,
-                                          float minBright, float brightPow, bool spikes)
-        {
-            var r = new float[size * size];
-            var g = new float[size * size];
-            var b = new float[size * size];
-
-            void Add(int x, int y, Vector3 c)
-            {
-                x = ((x % size) + size) % size;
-                y = ((y % size) + size) % size;
-                int i = y * size + x;
-                r[i] += c.x; g[i] += c.y; b[i] += c.z;
-            }
-
-            for (int s = 0; s < count; s++)
-            {
-                float cx = Rand01() * size;
-                float cy = Rand01() * size;
-                float sigma = Mathf.Lerp(minSigma, maxSigma, Rand01());
-                float bright = Mathf.Lerp(minBright, 1f, Mathf.Pow(Rand01(), brightPow));
-                Vector3 col = StarColor();
-
-                int ix = Mathf.FloorToInt(cx);
-                int iy = Mathf.FloorToInt(cy);
-                int rad = Mathf.CeilToInt(sigma * 3f);
-
-                for (int dy = -rad; dy <= rad; dy++)
-                {
-                    for (int dx = -rad; dx <= rad; dx++)
-                    {
-                        float ddx = ix + dx + 0.5f - cx;
-                        float ddy = iy + dy + 0.5f - cy;
-                        float v = bright * Mathf.Exp(-(ddx * ddx + ddy * ddy) / (2f * sigma * sigma));
-                        if (v < 0.004f) continue;
-                        Add(ix + dx, iy + dy, col * v);
-                    }
-                }
-
-                if (spikes)
-                {
-                    int len = Mathf.RoundToInt(6f + 10f * bright);
-                    for (int k = 1; k <= len; k++)
-                    {
-                        float f = bright * 0.55f * Mathf.Exp(-k / (len * 0.4f));
-                        Vector3 c = col * f;
-                        Add(ix + k, iy, c);
-                        Add(ix - k, iy, c);
-                        Add(ix, iy + k, c);
-                        Add(ix, iy - k, c);
-                    }
-                }
-            }
-
-            var px = new Color32[size * size];
-            for (int i = 0; i < px.Length; i++)
-            {
-                float m = Mathf.Max(r[i], Mathf.Max(g[i], b[i]));
-                if (m < 0.003f) { px[i] = new Color32(0, 0, 0, 0); continue; }
-
-                float a = Mathf.Min(1f, m);
-                px[i] = new Color32(ToByte(r[i] / a), ToByte(g[i] / a), ToByte(b[i] / a), ToByte(a));
-            }
-
-            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false)
-            {
-                name = "BG_Stars",
-                wrapMode = TextureWrapMode.Repeat,
-                filterMode = FilterMode.Bilinear
-            };
-            tex.SetPixels32(px);
-            tex.Apply(false, true);
-            return tex;
         }
 
         // ---- Estrella fugaz ----------------------------------------------
@@ -579,7 +436,7 @@ namespace LunarLander
                 {
                     float tpu = l.tilesY / (2f * referenceSize);
                     ox = Mathf.Repeat(camPos.x * l.parallax * tpu + l.drift * t, 1f);
-                    oy = Mathf.Repeat(camPos.y * l.parallax * tpu, 1f);
+                    oy = Mathf.Repeat(camPos.y * l.parallax * tpu * l.parallaxYScale + l.driftY * t, 1f);
                     hx = 0.5f * tilesX * ViewMargin;
                     hy = 0.5f * tilesYv * ViewMargin;
                 }
@@ -597,7 +454,7 @@ namespace LunarLander
                     float s = 0.65f * Mathf.Sin(t * l.twinkleSpeed + l.twinklePhase)
                             + 0.35f * Mathf.Sin(t * l.twinkleSpeed * 2.7f + l.twinklePhase * 1.7f);
                     s = 0.5f + 0.5f * s;
-                    currentAlpha = l.alpha * (1f - twinkleDepth + twinkleDepth * s);
+                    currentAlpha = l.alpha * (1f - l.twinkleDepth + l.twinkleDepth * s);
                 }
 
                 if (l.reactsToAudio)
@@ -615,14 +472,14 @@ namespace LunarLander
         }
 
         // ------------------------------------------------------------------
-        // Utilidades matemáticas
+        // Utilidades matemáticas compartidas
         // ------------------------------------------------------------------
 
-        private static Vector3 V(Color c) => new Vector3(c.r, c.g, c.b);
+        protected static Vector3 V(Color c) => new Vector3(c.r, c.g, c.b);
 
-        private static byte ToByte(float v) => (byte)Mathf.Clamp(Mathf.RoundToInt(v * 255f), 0, 255);
+        protected static byte ToByte(float v) => (byte)Mathf.Clamp(Mathf.RoundToInt(v * 255f), 0, 255);
 
-        private static float Smooth(float e0, float e1, float x)
+        protected static float Smooth(float e0, float e1, float x)
         {
             float t = Mathf.Clamp01((x - e0) / (e1 - e0));
             return t * t * (3f - 2f * t);
@@ -660,7 +517,8 @@ namespace LunarLander
             return Mathf.Lerp(Mathf.Lerp(a, b, fx), Mathf.Lerp(c, d, fx), fy);
         }
 
-        private static float PeriodicFbm(float u, float v, int basePeriod, int octaves, int s)
+        /// <summary>Ruido fractal que se repite sin costuras (para texturas en mosaico).</summary>
+        protected static float PeriodicFbm(float u, float v, int basePeriod, int octaves, int s)
         {
             float sum = 0f, amp = 1f, norm = 0f;
             int period = basePeriod;

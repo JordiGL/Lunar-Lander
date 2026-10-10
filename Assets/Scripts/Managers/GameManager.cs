@@ -6,8 +6,8 @@ namespace LunarLander
 {
     /// <summary>
     /// Controlador central del flujo de juego.
-    /// Suscribe los eventos del LanderController, gestiona el reinicio de partida,
-    /// calcula la puntuación según el multiplicador del terreno y comunica los cambios al HUD.
+    /// Suscribe los eventos del LanderController, gestiona el avance o reinicio de niveles/pantallas,
+    /// calcula la puntuación según el multiplicador del terreno y comunica el estado al HUD.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class GameManager : MonoBehaviour
@@ -15,6 +15,11 @@ namespace LunarLander
         [Header("Referencias del Sistema")]
         [SerializeField] private LanderController lander;
         [SerializeField] private StandardHUD hud;
+
+        [Tooltip("Gestor de pantallas/niveles (cada una con su Terreno y SpaceBackground).")]
+        [SerializeField] private StageManager stageManager;
+
+        [Tooltip("Opcional: Si aún usas el antiguo TerrainManager como alternativa.")]
         [SerializeField] private TerrainManager terrainManager;
 
         [Header("Configuración de Puntuación")]
@@ -22,22 +27,27 @@ namespace LunarLander
         [SerializeField, Min(10)] private int baseLandingPoints = 50;
 
         [Header("Ciclo de Juego")]
-        [Tooltip("Punto de reaparición (Spawn) de la nave al iniciar o reiniciar.")]
-        [SerializeField] private Vector2 spawnPosition = new Vector2(0f, 3.5f);
+        [Tooltip("Punto de reaparición (Spawn) por defecto si la pantalla no define uno.")]
+        [SerializeField] private Vector2 defaultSpawnPosition = new Vector2(0f, 3.5f);
 
-        [Tooltip("Tiempo de espera en segundos tras aterrizar o chocar antes de reiniciar el intento.")]
+        [Tooltip("Tiempo de espera en segundos tras aterrizar o chocar antes de reiniciar o avanzar.")]
         [SerializeField, Min(0.5f)] private float resetDelay = 3.0f;
+
+        [Tooltip("Si está activo, aterrizar con éxito avanza a la siguiente pantalla en lugar de repetir la misma.")]
+        [SerializeField] private bool advanceStageOnLanding = false;
 
         private Coroutine resetCoroutine;
         private VectorTerrain currentTerrain;
-        private HashSet<int> claimedPads = new HashSet<int>();
+        private Vector2 currentSpawnPosition;
+        private readonly HashSet<int> claimedPads = new HashSet<int>();
 
         private void Awake()
         {
             // Búsqueda de referencias por si no se asignaron en el Inspector
-            if (lander == null) lander = FindObjectOfType<LanderController>();
-            if (hud == null) hud = FindObjectOfType<StandardHUD>(); // Búsqueda de StandardHUD
-            if (terrainManager == null) terrainManager = FindObjectOfType<TerrainManager>();
+            if (lander == null) lander = FindFirstObjectByType<LanderController>();
+            if (hud == null) hud = FindFirstObjectByType<StandardHUD>();
+            if (stageManager == null) stageManager = FindFirstObjectByType<StageManager>();
+            if (terrainManager == null && stageManager == null) terrainManager = FindFirstObjectByType<TerrainManager>();
         }
 
         private void OnEnable()
@@ -64,7 +74,7 @@ namespace LunarLander
         }
 
         /// <summary>
-        /// Inicia o reinicia la partida desde el estado inicial.
+        /// Inicia o reinicia la partida desde el estado inicial de la pantalla.
         /// </summary>
         public void StartNewGame()
         {
@@ -74,96 +84,105 @@ namespace LunarLander
                 resetCoroutine = null;
             }
 
-            if (terrainManager != null)
-            {
-                // Delega la responsabilidad de elegir y generar al Manager
-                currentTerrain = terrainManager.SetupTerrain();
-            }
+            SetupActiveStage();
 
             if (hud != null) hud.ResetTimer();
-            if (lander != null) lander.ResetLander(spawnPosition);
+            if (lander != null) lander.ResetLander(currentSpawnPosition);
+
             claimedPads.Clear();
+        }
+
+        /// <summary>
+        /// Configura el entorno activo (StageManager o TerrainManager de respaldo).
+        /// </summary>
+        private void SetupActiveStage()
+        {
+            currentSpawnPosition = defaultSpawnPosition;
+
+            if (stageManager != null)
+            {
+                StageData stage = stageManager.SetupCurrentStage();
+                if (stage != null)
+                {
+                    currentTerrain = stage.terrain;
+                    currentSpawnPosition = stage.spawnPosition;
+                }
+            }
+            else if (terrainManager != null)
+            {
+                currentTerrain = terrainManager.SetupTerrain();
+            }
         }
 
         private void HandleLanded(LandingResult result)
         {
+            if (!result.Success) return;
+
             int padIndex = GetLandingPadIndex(lander.transform.position);
 
-            // Solo premiamos si es una plataforma válida y no ha sido reclamada
+            // Recompensa si es una plataforma válida no reclamada en este intento
             if (padIndex >= 0 && !claimedPads.Contains(padIndex))
             {
                 claimedPads.Add(padIndex);
 
-                int multiplier = currentTerrain.LandingPads[padIndex].multiplier;
+                int multiplier = currentTerrain != null ? currentTerrain.LandingPads[padIndex].multiplier : 1;
                 int earnedPoints = baseLandingPoints * multiplier;
 
                 if (hud != null) hud.AddScore(earnedPoints);
                 if (lander != null) lander.AddFuel(250f);
             }
-        }
 
-        // Sustituye el antiguo GetLandingPadMultiplier por este que devuelve el Índice:
-        private int GetLandingPadIndex(Vector2 landerPosition)
-        {
-            if (currentTerrain == null) return -1;
-
-            float tolerance = 0.5f;
-            for (int i = 0; i < currentTerrain.LandingPads.Count; i++)
+            // Si se desea pasar de nivel al aterrizar
+            if (advanceStageOnLanding)
             {
-                var pad = currentTerrain.LandingPads[i];
-                float minX = Mathf.Min(pad.startPoint.x, pad.endPoint.x) - tolerance;
-                float maxX = Mathf.Max(pad.startPoint.x, pad.endPoint.x) + tolerance;
-
-                if (landerPosition.x >= minX && landerPosition.x <= maxX)
-                    return i;
+                ScheduleReset(nextStage: true);
             }
-            return -1;
         }
 
         private void HandleCrashed(LandingResult result)
         {
-            // En caso de colisión se espera un tiempo y se reintenta el nivel
-            ScheduleReset();
+            // En caso de colisión se espera y se reintenta la pantalla actual
+            ScheduleReset(nextStage: false);
         }
 
-        private int GetLandingPadMultiplier(Vector2 landerPosition)
+        private int GetLandingPadIndex(Vector2 landerPosition)
         {
-            if (currentTerrain == null) return 1;
+            if (currentTerrain == null || currentTerrain.LandingPads == null) return -1;
 
-            float tolerance = 0.5f;
-            foreach (var pad in currentTerrain.LandingPads) // <-- Usa currentTerrain
+            const float tolerance = 0.5f;
+            for (int i = 0; i < currentTerrain.LandingPads.Count; i++)
             {
+                LandingPad pad = currentTerrain.LandingPads[i];
                 float minX = Mathf.Min(pad.startPoint.x, pad.endPoint.x) - tolerance;
                 float maxX = Mathf.Max(pad.startPoint.x, pad.endPoint.x) + tolerance;
 
                 if (landerPosition.x >= minX && landerPosition.x <= maxX)
-                    return pad.multiplier;
+                {
+                    return i;
+                }
             }
-            return 1;
+
+            return -1;
         }
 
-        private void ScheduleReset()
+        private void ScheduleReset(bool nextStage)
         {
             if (resetCoroutine != null)
             {
                 StopCoroutine(resetCoroutine);
             }
 
-            resetCoroutine = StartCoroutine(ResetRoutine());
+            resetCoroutine = StartCoroutine(ResetRoutine(nextStage));
         }
 
-        private IEnumerator ResetRoutine()
+        private IEnumerator ResetRoutine(bool nextStage)
         {
             yield return new WaitForSeconds(resetDelay);
 
-            if (lander != null)
+            if (nextStage && stageManager != null)
             {
-                lander.ResetLander(spawnPosition);
-            }
-
-            if (hud != null)
-            {
-                hud.ResetTimer();
+                stageManager.NextStage();
+                SetupActiveStage();
             }
 
             if (currentTerrain != null)
@@ -171,6 +190,17 @@ namespace LunarLander
                 currentTerrain.ClearFlags();
             }
 
+            if (lander != null)
+            {
+                lander.ResetLander(currentSpawnPosition);
+            }
+
+            if (hud != null)
+            {
+                hud.ResetTimer();
+            }
+
+            claimedPads.Clear();
             resetCoroutine = null;
         }
     }
